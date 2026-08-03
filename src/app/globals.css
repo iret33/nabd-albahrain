@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+:root {
+  /* Bahraini sea & pearl — design tokens */
+  --sea-900: #0b2027;
+  --sea-800: #123138;
+  --sand-50: #f7f3ec;
+  --sand-100: #ede7da;
+  --ink: #17262a;
+  --pearl: #c9a961;
+  --coral: #a6473f;
+  --line-dark: rgba(237, 231, 218, 0.14);
+  --line-light: #e3dcca;
+
+  --background: var(--sand-50);
+  --foreground: var(--ink);
+}
+
+@theme inline {
+  --color-sea-900: var(--sea-900);
+  --color-sea-800: var(--sea-800);
+  --color-sand-50: var(--sand-50);
+  --color-sand-100: var(--sand-100);
+  --color-ink: var(--ink);
+  --color-pearl: var(--pearl);
+  --color-coral: var(--coral);
+  --color-line-dark: var(--line-dark);
+  --color-line-light: var(--line-light);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --font-display: var(--font-tajawal);
+  --font-sans: var(--font-ibm-plex-sans-arabic);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), "IBM Plex Sans Arabic", Arial, sans-serif;
+}
+
+/* All numeric figures use Latin tabular digits */
+.tabular-figures {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Respect prefers-reduced-motion site-wide */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visible keyboard focus states */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--pearl);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Pearl lattice divider — fading dot-grid, masked to fade downward */
+.pearl-lattice {
+  height: 96px;
+  width: 100%;
+  background-image: radial-gradient(
+    circle,
+    var(--pearl) 1px,
+    transparent 1px
+  );
+  background-size: 18px 18px;
+  opacity: 0.35;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}

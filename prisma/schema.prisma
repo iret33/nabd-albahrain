@@ -1,0 +1,24 @@
+// Prisma schema for نبض البحرين (Nabd Al-Bahrain).
+//
+// Phase 1 (this file, as committed): scaffold only. The `ScaffoldCheck`
+// model below exists purely so `prisma migrate dev` has something to
+// migrate and the Postgres connection / pg_trgm extension can be verified
+// end-to-end. Phase 2 (sync engine) owns the real data models — Dataset,
+// DatasetRecord, SyncLog, SyncLock — and will replace/extend this file.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Placeholder model — proves migrations run end-to-end against Postgres.
+/// Safe for Phase 2 to drop once real models land.
+model ScaffoldCheck {
+  id        String   @id @default(cuid())
+  label     String
+  createdAt DateTime @default(now())
+}
