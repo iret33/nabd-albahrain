@@ -21,13 +21,19 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 2 of 9 — sync engine.** Phase 1 set up the app shell, design
-system, database connection, and tooling. This phase adds the real data
-models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync
-engine that pulls the full catalog + every dataset's records from
+**Phase 3 of 9 — visualization-inference engine.** Phase 1 set up the app
+shell, design system, database connection, and tooling. Phase 2 added the
+real data models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the
+sync engine that pulls the full catalog + every dataset's records from
 data.gov.bh into local Postgres (see [Sync engine](#sync-engine) below).
+This phase implements `computeDerivedFields()`
+(`src/lib/sync/derived.ts`) for real: per-field `statsJson`, a rule-based
+`vizConfig`/`chartData` chart recommendation, and a template-based Arabic
+`summaryAr` — all computed deterministically from each dataset's synced
+records, no AI/LLM calls (see
+[Visualization-inference engine](#visualization-inference-engine) below).
 The home page (`src/app/page.tsx`) is still a placeholder — dataset
-browsing/search pages, charts, computed stats/summaries, and the admin
+browsing/search pages, actual chart rendering (Recharts), and the admin
 dashboard land in later phases.
 
 ## Local development
@@ -173,10 +179,77 @@ What a run does:
 4. Writes one `SyncLog` row per run (processed/succeeded/failed counts +
    `failuresJson`).
 
-`computeDerivedFields()` (`src/lib/sync/derived.ts`) — which fills in
-`statsJson`/`vizConfig`/`chartData`/`summaryAr` — is a stub in this phase;
-it's already wired into the sync loop with the right signature for Phase 3
-to implement without restructuring anything.
+`computeDerivedFields(datasetId, records, fields)` (`src/lib/sync/derived.ts`)
+fills in `statsJson`/`vizConfig`/`chartData`/`summaryAr` — see
+[Visualization-inference engine](#visualization-inference-engine) below.
+
+## Visualization-inference engine
+
+`src/lib/sync/derived.ts` computes, per dataset, entirely deterministically
+(no AI/LLM calls) from that dataset's full synced records + its ODS
+`fields[]` schema:
+
+- **`statsJson`** — per field: `nullRate`, `distinctCount` (capped at
+  `"1000+"`), numeric `min`/`max`/`mean`, temporal `min`/`max` (as the
+  original raw values), and the top 10 values by frequency for text fields
+  with ≤30 distinct values. A field's `annotations.unit` (e.g. `"km2"`),
+  when the source provides one, is carried through as `unit`.
+- **Field classification** — each field is classified as **temporal**
+  (`date`/`datetime` type, or a `text`/`int` field whose name/label looks
+  temporal and ≥90% of sampled values parse as a year or date),
+  **measure** (`int`/`double`, excluding `id`/`code`-style names, generic
+  row-index columns, and longitude/latitude coordinate fields — see the
+  "deviations from spec" note below), or **dimension** (`text`, 2-30
+  distinct values; "series-able" at ≤8).
+- **`vizConfig` + `chartData`** — a first-match-wins decision tree picks one
+  of `multi-line` / `area` / `bar-h` / `bar-stacked` / `histogram` /
+  `table`, and pre-aggregates `chartData` accordingly (sum by default, mean
+  when the measure's label looks like a rate/percent/average). `chartData`
+  is always pre-aggregated and capped at 500 points — never a raw record
+  dump, per the Recharts rule in the spec. Every chart builder falls back
+  to the next rule in the tree (and ultimately to `table`) if it can't
+  actually produce real data, so a structural match on paper never
+  persists an empty chart.
+- **`summaryAr`** — a short template-based Arabic sentence generated from
+  whichever chart was produced (temporal / categorical / a generic
+  row+field-count fallback for `table`/`histogram`), gracefully dropping
+  any clause it can't fill in (never prints `undefined` or an empty
+  placeholder).
+
+**Deviations from the spec worth knowing about**, found while eyeballing
+real synced datasets (`pnpm sync -- --limit 10 --force` plus several
+individually-targeted datasets — temporal, categorical, geo, tiny/weird):
+
+- The spec's measure-exclusion regex (`/^(id|.*_id|code|.*_code)$/i`)
+  doesn't catch two patterns that are extremely common across this
+  specific catalog and were confirmed to produce actively wrong charts:
+  a bare `"n"` row-index column present on almost every dataset (usually
+  caught by a general "dense +1 sequence" heuristic, but some datasets
+  restart `n` per facet, which breaks that heuristic while leaving a
+  fully-non-null column that then wins "best measure" over the real,
+  partly-null measure on non-null count alone — confirmed live on
+  `01-caa-monthly-passenger-movement-at-bahrain-international-airport`,
+  where `n` was beating the real `value` field), and longitude/latitude
+  coordinate fields on the ~37 "geographical-locations-of-*" datasets
+  (confirmed live on `geographical-locations-of-cinemas`, where
+  `x_longitude`/`y_latitude` were valid measure candidates before this
+  fix). Both are now excluded from measure classification alongside the
+  spec's own id/code regex.
+- Known, intentionally-not-"fixed" limitation: the spec's rate/mean regex
+  (`/(rate|percent|ratio|average|معدل|نسبة|متوسط)/i`) doesn't match
+  economic index fields labeled just "Point" or "Level" (e.g. the CPI
+  dataset), so those get summed (the spec's default) across every category
+  and month within a year for the `area` chart, producing a large, not
+  very meaningful "index total". This is a real limitation of a
+  regex-only, non-semantic classifier; widening the regex to catch
+  "index"/"point"/"level" felt too speculative/overfit to add unasked, so
+  it's left as-is and flagged here for a later phase to revisit if it
+  matters for the UI.
+- `computeDerivedFields`'s signature was extended from Phase 2's stub
+  `(datasetId, records)` to `(datasetId, records, fields)` — classification
+  needs each field's schema type/label/annotations, which only exist in
+  `Dataset.fieldsJson`, not in the record rows themselves. `engine.ts`'s
+  call site was updated accordingly (it already had `dataset` in scope).
 
 ## Scripts
 

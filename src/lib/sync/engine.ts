@@ -15,7 +15,7 @@ import { fetchDatasetExport, fetchFullCatalog } from "./ods-client";
 import { computeDerivedFields } from "./derived";
 import { acquireLock, releaseLock } from "./lock";
 import { chunk, computeTitleClean, mapWithConcurrency } from "./utils";
-import type { CatalogDataset } from "./schemas";
+import type { CatalogDataset, CatalogField } from "./schemas";
 
 const INSERT_BATCH_SIZE = 1000;
 const MAX_ROWS_HARD_CAP = 300_000;
@@ -129,8 +129,16 @@ async function syncOneDataset(datasetId: string, force: boolean): Promise<Datase
 
     // Derived fields are computed over the FULL fetched array (not just
     // `toStore`) so Phase 3 can produce accurate stats even when storage
-    // was capped by the size guard.
-    const derived = await computeDerivedFields(datasetId, records);
+    // was capped by the size guard. `dataset.fieldsJson` is the same raw
+    // ODS `fields[]` array upserted from the catalog entry above — Phase 3
+    // needs field type/label/annotations to classify and label the chart,
+    // so this call site was extended (from Phase 2's `(datasetId, records)`
+    // stub signature) to also pass it through.
+    const derived = await computeDerivedFields(
+      datasetId,
+      records,
+      (dataset.fieldsJson as unknown as CatalogField[]) ?? [],
+    );
 
     await prisma.dataset.update({
       where: { id: datasetId },
@@ -144,8 +152,8 @@ async function syncOneDataset(datasetId: string, force: boolean): Promise<Datase
         // NULL; Prisma.JsonNull would instead store the JSON literal
         // `null`, which reads back as "computed, and the answer is null"
         // — not what an un-implemented stub means.
-        statsJson: (derived.statsJson ?? Prisma.DbNull) as Prisma.InputJsonValue,
-        vizConfig: (derived.vizConfig ?? Prisma.DbNull) as Prisma.InputJsonValue,
+        statsJson: (derived.statsJson ?? Prisma.DbNull) as unknown as Prisma.InputJsonValue,
+        vizConfig: (derived.vizConfig ?? Prisma.DbNull) as unknown as Prisma.InputJsonValue,
         chartData: (derived.chartData ?? Prisma.DbNull) as Prisma.InputJsonValue,
         summaryAr: derived.summaryAr,
       },
