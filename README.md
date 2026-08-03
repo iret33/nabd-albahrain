@@ -21,10 +21,14 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 1 of 9 — scaffold only.** This commit sets up the app shell,
-design system, database connection, and tooling. The home page
-(`src/app/page.tsx`) is a placeholder — the real sync engine, dataset
-browsing/search pages, charts, and admin dashboard land in later phases.
+**Phase 2 of 9 — sync engine.** Phase 1 set up the app shell, design
+system, database connection, and tooling. This phase adds the real data
+models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync
+engine that pulls the full catalog + every dataset's records from
+data.gov.bh into local Postgres (see [Sync engine](#sync-engine) below).
+The home page (`src/app/page.tsx`) is still a placeholder — dataset
+browsing/search pages, charts, computed stats/summaries, and the admin
+dashboard land in later phases.
 
 ## Local development
 
@@ -118,10 +122,61 @@ mandatory attribution line linking to https://data.gov.bh.
 ## Data source
 
 Bahrain's official open data portal, an OpenDataSoft Explore API v2.1
-instance at `https://data.gov.bh/api/explore/v2.1`. See the sync engine
-(added in Phase 2) for the client, politeness rules (concurrency limit 3,
-~250ms delay, retry/backoff, 120s export timeout, custom User-Agent), and
-per-dataset error isolation.
+instance at `https://data.gov.bh/api/explore/v2.1` (~512 datasets from 35+
+government entities as of this writing). The sync engine (`src/lib/sync/`)
+is the only thing that talks to it:
+
+- `GET /catalog/datasets?limit=100&offset=N` — paginated catalog (100 at a
+  time), used to upsert every `Dataset`'s metadata.
+- `GET /catalog/datasets/{id}/exports/json` — full per-dataset export (flat
+  JSON array, no pagination cap), used to populate `DatasetRecord`.
+
+Every request goes through a shared polite HTTP client
+(`src/lib/sync/http.ts`) that enforces: a concurrency cap of 3 in-flight
+requests, a ~250ms stagger between request starts, exponential backoff with
+2 retries on HTTP 429/5xx, a 120s timeout on export requests, and a custom
+`User-Agent: nabd-albahrain/1.0 (...)` header. Every response is validated
+with tolerant Zod schemas (`src/lib/sync/schemas.ts`, `.passthrough()` +
+optional fields throughout) so an unexpected extra key never throws.
+
+## Sync engine
+
+`src/lib/sync/engine.ts` exports `runSync(opts)`, callable from any context
+(CLI today, a later API route). `src/lib/sync/cli.ts` is the CLI wrapper:
+
+```bash
+pnpm sync                              # full sync: all ~512 datasets
+pnpm sync -- --limit 10                # only sync records for the first 10 (catalog order)
+pnpm sync -- --dataset <dataset_id>    # only sync records for one dataset
+pnpm sync -- --force                   # re-fetch records even if unchanged since last sync
+```
+
+What a run does:
+
+1. Acquires `SyncLock` (a singleton row) so only one sync runs at a time —
+   aborts with a clear message if another sync is already running, unless
+   that lock is stale (`since` older than 2 hours), in which case it's
+   auto-released first. Always released in a `finally`.
+2. Fetches the **full** catalog (all pages) and upserts every `Dataset`'s
+   metadata — title/`titleClean` (leading numeric index prefix like `"2. "`
+   stripped), description, primary theme (`theme[0]`, `null` if empty),
+   publisher, `recordsCount`, `fieldsJson`, `sourceModified`.
+3. For each dataset in scope (all / `--limit` / `--dataset`), with
+   concurrency 3: skips re-fetching records if `sourceModified` hasn't
+   advanced past `lastSyncedAt`, unless `--force`. Otherwise fetches the
+   full export, applies a size guard (>300,000 rows: store only the first
+   50,000 and mark `syncStatus="partial"`, but still hand the *full* array
+   to `computeDerivedFields()`), and replaces that dataset's
+   `DatasetRecord` rows in a transaction (delete + batched inserts of
+   1,000). One dataset's failure is caught and recorded — it never stops
+   the loop.
+4. Writes one `SyncLog` row per run (processed/succeeded/failed counts +
+   `failuresJson`).
+
+`computeDerivedFields()` (`src/lib/sync/derived.ts`) — which fills in
+`statsJson`/`vizConfig`/`chartData`/`summaryAr` — is a stub in this phase;
+it's already wired into the sync loop with the right signature for Phase 3
+to implement without restructuring anything.
 
 ## Scripts
 
@@ -130,6 +185,7 @@ pnpm dev             # start dev server
 pnpm build            # production build
 pnpm start            # run the standalone production build
 pnpm lint             # eslint
+pnpm sync             # run the data.gov.bh sync (see above)
 pnpm exec prisma studio        # inspect the database
 pnpm exec prisma migrate dev   # apply/create migrations
 ```

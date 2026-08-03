@@ -1,10 +1,9 @@
 // Prisma schema for نبض البحرين (Nabd Al-Bahrain).
 //
-// Phase 1 (this file, as committed): scaffold only. The `ScaffoldCheck`
-// model below exists purely so `prisma migrate dev` has something to
-// migrate and the Postgres connection / pg_trgm extension can be verified
-// end-to-end. Phase 2 (sync engine) owns the real data models — Dataset,
-// DatasetRecord, SyncLog, SyncLock — and will replace/extend this file.
+// Phase 1 scaffolded this file with a placeholder `ScaffoldCheck` model just
+// to prove migrations ran end-to-end against Postgres. Phase 2 (this
+// commit) replaces it with the real data models that back the sync engine:
+// Dataset, DatasetRecord, SyncLog, SyncLock.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,10 +14,67 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Placeholder model — proves migrations run end-to-end against Postgres.
-/// Safe for Phase 2 to drop once real models land.
-model ScaffoldCheck {
-  id        String   @id @default(cuid())
-  label     String
-  createdAt DateTime @default(now())
+/// One row per dataset on data.gov.bh (id = the ODS dataset_id).
+/// Metadata is upserted on every catalog sync; stats/vizConfig/chartData/
+/// summaryAr are computed by computeDerivedFields() (stubbed in Phase 2,
+/// implemented in Phase 3).
+model Dataset {
+  id String @id // dataset_id from ODS, e.g. "12-live-births-by-..."
+
+  title       String
+  titleClean  String
+  description String?
+  theme       String?
+  publisher   String?
+
+  recordsCount Int  @default(0) // records_count as reported by ODS metadata
+  sourceCount  Int  @default(0) // rows actually stored in DatasetRecord (may be capped, see syncStatus)
+  fieldsJson   Json // raw `fields` array from the catalog entry
+
+  // Derived/computed fields — filled in by computeDerivedFields() (Phase 3).
+  statsJson Json?
+  vizConfig Json?
+  chartData Json?
+  summaryAr String?
+
+  sourceModified DateTime? // metas.default.modified from ODS
+  lastSyncedAt   DateTime?
+  syncStatus     String    @default("pending") // pending | ok | partial | error
+  syncError      String?
+
+  records DatasetRecord[]
+
+  @@index([theme])
+  @@index([syncStatus])
+}
+
+/// One row per record inside a dataset's export. Bulk-replaced on every
+/// sync of that dataset (delete + reinsert in a transaction).
+model DatasetRecord {
+  id        BigInt  @id @default(autoincrement())
+  datasetId String
+  data      Json
+  dataset   Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId])
+}
+
+/// Audit trail: one row per full sync run.
+model SyncLog {
+  id           Int       @id @default(autoincrement())
+  trigger      String // "cli" | "api" | ...
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  processed    Int       @default(0)
+  succeeded    Int       @default(0)
+  failed       Int       @default(0)
+  failuresJson Json? // [{ datasetId, error }]
+}
+
+/// Singleton row (id always 1) used as a mutex so only one sync runs at a
+/// time. A `since` older than 2 hours is treated as stale and auto-released.
+model SyncLock {
+  id      Int       @id @default(1)
+  running Boolean   @default(false)
+  since   DateTime?
 }
