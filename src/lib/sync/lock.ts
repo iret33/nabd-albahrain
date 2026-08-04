@@ -53,3 +53,27 @@ export async function releaseLock(): Promise<void> {
     update: { running: false, since: null },
   });
 }
+
+export interface LockState {
+  running: boolean;
+  since: Date | null;
+  /** True when `running` but `since` is older than STALE_MS — acquireLock() would auto-release it. */
+  stale: boolean;
+}
+
+/**
+ * Read-only peek at the lock (Phase 6: `POST /api/sync` / `GET
+ * /api/sync/status`). Never mutates anything — `acquireLock()` is still
+ * the only thing that actually takes/releases the lock. Used to decide
+ * whether an API request should short-circuit with a 409 without paying
+ * for (or racing) a full acquire/release cycle.
+ */
+export async function getLockState(): Promise<LockState> {
+  const existing = await prisma.syncLock.findUnique({ where: { id: 1 } });
+  if (!existing?.running) {
+    return { running: false, since: null, stale: false };
+  }
+  const since = existing.since ?? new Date(0);
+  const staleMs = Date.now() - since.getTime();
+  return { running: true, since, stale: staleMs >= STALE_MS };
+}

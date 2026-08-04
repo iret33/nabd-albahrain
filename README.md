@@ -21,8 +21,7 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 5 of 9 — remaining public pages, SEO, and global error/empty
-states.** Phase 1 set up the app shell, design system, database
+**Phase 6 of 9 — the sync API routes and the `/admin` dashboard.** Phase 1 set up the app shell, design system, database
 connection, and tooling. Phase 2 added the real data models (`Dataset`,
 `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync engine that pulls the
 full catalog + every dataset's records from data.gov.bh into local
@@ -116,8 +115,23 @@ layer (`src/lib/queries.ts`, `unstable_cache` tagged `"datasets"` /
 `"dataset:{id}"`) are shared across all of the above. Loading skeletons
 (`src/components/skeletons.tsx`) and plain-Arabic empty states
 (`src/components/empty-state.tsx`) cover the pre-sync / partially-synced /
-zero-result cases everywhere. The admin dashboard and wiring
-`revalidateTag()` into the sync engine are later phases.
+zero-result cases everywhere.
+
+This phase (6) adds the sync API + `/admin` — see
+[Sync API & admin dashboard](#sync-api--admin-dashboard) below for the full
+writeup:
+
+- **`POST /api/sync`** — kicks off a sync run (fire-and-forget, `SyncLock`
+  guarantees only one real run at a time), then `revalidateTag()`s every
+  public page that read stale data.
+- **`GET /api/sync/status`** — current lock state + latest `SyncLog` row,
+  polled by the admin dashboard every 3s.
+- **`/admin/login`** + **`/admin`** — a plain shared-token gate (no user
+  accounts) guarding a live dashboard: header stat cards, a "مزامنة الكل
+  الآن" button, a failures table with per-row retry, the last 20 sync
+  runs, and a full searchable dataset list with a per-dataset refresh
+  button — all backed by real Postgres reads and real polling, not static
+  render.
 
 ## Local development
 
@@ -388,6 +402,120 @@ per-route feature list. A few implementation notes worth knowing about:
   mix of chart types (`area`/`multi-line`/`bar-stacked`/`table` all now
   present locally) to actually verify the page against. A full sync run
   in a later phase will pick up everything else.
+
+## Sync API & admin dashboard
+
+Phase 6. `src/lib/sync/engine.ts`'s `runSync()` (Phase 2) is unchanged —
+this phase only adds callers + a UI on top of it.
+
+### `POST /api/sync`
+
+Kicks off a sync run without blocking the response:
+
+```
+POST /api/sync
+POST /api/sync?dataset=<dataset_id>   # refresh just one dataset
+POST /api/sync?force=1                # re-fetch even if unchanged
+```
+
+- **Auth** (`src/lib/sync/auth.ts`, `isSyncRequestAuthorized()`) — either
+  of two credentials, checked in this order:
+  1. `Authorization: Bearer $SYNC_TOKEN` — the documented contract for
+     external/scripted callers (cron, `curl`, CI).
+  2. The `admin_token` httpOnly cookie set by `/admin/login`. This is what
+     lets the `/admin` dashboard's buttons call this exact endpoint
+     without `SYNC_TOKEN` ever reaching client-side JS — the cookie
+     travels automatically on same-origin `fetch()` calls, and `/admin`
+     is itself gated behind `ADMIN_TOKEN` (see below), so this doesn't
+     grant anyone new capability, just a token-free path for a session
+     that already has equivalent access.
+  Neither check can pass if its env var is unset (fails closed).
+- **Response** — `202 { started: true }` once a run has been kicked off,
+  or `409 { started: false, error: "sync_already_running", since }` if
+  `SyncLock` is already held and not stale (`src/lib/sync/lock.ts`'s new
+  `getLockState()` — a read-only peek, used here as a fast-path so an
+  obviously-redundant request gets an immediate 409 instead of silently
+  queueing; `runSync()`'s own `acquireLock()` remains the real,
+  authoritative mutex for the rare race between two near-simultaneous
+  requests — the loser's `SyncAlreadyRunningError` is caught and logged,
+  not surfaced, since its request already got a response).
+- **Cache invalidation** — once the fire-and-forget `runSync()` promise
+  resolves, the route calls `revalidateTag("datasets")` plus
+  `revalidateTag("dataset:<id>")` for every affected dataset (just the one
+  for a single-dataset sync; every dataset currently on file for a full
+  sync — cheap, and correctly covers datasets the catalog fetch newly
+  discovered that run), so Phase 4/5's `unstable_cache`d public pages
+  reflect the new data immediately instead of waiting out their cache.
+
+### `GET /api/sync/status`
+
+Same combined auth. Returns `{ lock, latestLog }` — `lock` is
+`getLockState()`'s `{ running, since, stale }`, `latestLog` is the most
+recent `SyncLog` row. Polled by the admin dashboard every 3s while a sync
+is (or might be) running.
+
+### `/admin`
+
+No user accounts — a single shared token compared server-side:
+
+- **`/admin/login`** — a plain form; `loginAction` (`src/app/admin/login/actions.ts`,
+  a Server Action) compares the submitted value to `process.env.ADMIN_TOKEN`
+  and, on a match, sets the httpOnly `admin_token` cookie (7-day expiry,
+  `secure` in production) and redirects to `/admin`. A mismatch redirects
+  back with `?error=1`, rendered as an Arabic error message.
+- **`src/middleware.ts`** — guards every `/admin/*` route except
+  `/admin/login` itself, checking that cookie and redirecting to the login
+  form otherwise.
+- **`/admin` (`src/app/admin/page.tsx` + `src/components/admin/admin-dashboard.tsx`)**
+  — a Server Component does the initial data fetch straight from Postgres
+  (`src/lib/admin/queries.ts` — deliberately uncached, unlike
+  `src/lib/queries.ts`'s public queries, since this page exists to show
+  real, current state) feeding a Client Component for the interactive
+  parts:
+  - Header stat cards: total datasets, ok/partial/error/pending counts,
+    last sync time + duration.
+  - **"مزامنة الكل الآن"** — `POST`s `/api/sync` (cookie-authed, no
+    `?dataset=`), shows a spinner, and polls `/api/sync/status` every 3s
+    until the lock clears, then calls `router.refresh()` to pull fresh
+    numbers from the server (the data props are read directly in JSX
+    rather than copied into `useState`, specifically so `refresh()`
+    actually shows new data instead of state frozen at first mount).
+  - **Failures table** — every `syncStatus: "error"` dataset, its
+    `syncError`, and a per-row "إعادة المحاولة" button
+    (`POST /api/sync?dataset=<id>&force=1`, same polling/refresh flow).
+  - **Last 20 `SyncLog` rows.**
+  - **Full searchable dataset list** — all 512 rows fetched once,
+    filtered client-side (id/title/theme/publisher substring match — no
+    pagination needed at this size), status dot per row, and a
+    per-dataset "مزامنة" button (same `?dataset=<id>&force=1` flow).
+  - If a sync is already running when the page loads (started from the
+    CLI, or another admin tab), the dashboard detects this via the
+    server-fetched initial lock state and starts polling immediately
+    instead of waiting for a button click.
+  - **`تسجيل الخروج`** — a small form on the page itself,
+    `logoutAction` clears the cookie and redirects to `/admin/login`.
+
+### Verified locally against the live sync (not just rendered statically)
+
+`pnpm dev`, logged into `/admin` with the real `ADMIN_TOKEN` from `.env`,
+then exercised the real endpoints end-to-end: unauthenticated `GET
+/api/sync/status` / `POST /api/sync` both 401; a bearer-authed
+`POST /api/sync?dataset=<id>&force=1` for one dataset returned `202`
+immediately, the lock flipped `running: true` then cleared, a new
+`SyncLog` row appeared, and the dataset's `syncStatus` flipped to `ok`
+with real `vizConfig`/`chartData` computed; two near-simultaneous
+requests for the same dataset correctly produced one `202` + one `409`;
+from inside the logged-in `/admin` page's own JS context, the
+cookie-only-authed `fetch()` calls the dashboard's buttons actually make
+(`/api/sync/status`, then `POST /api/sync?dataset=...&force=1`) were
+run directly and confirmed to work with zero bearer header — proving the
+dual-auth path — and after the run, reloading `/admin` showed the header
+counts, sync log, and that dataset's row in the searchable list all
+reflecting the new state; the freshly-synced dataset's own public
+`/dataset/[id]` page and the home page's portal-wide stats were checked
+straight after (no server restart) and both showed the new data,
+confirming `revalidateTag()` is actually wired up. `SyncLock` was
+confirmed `running: false` before the dev server was stopped.
 
 ## Scripts
 
