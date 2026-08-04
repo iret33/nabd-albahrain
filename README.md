@@ -21,7 +21,7 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 6 of 9 — the sync API routes and the `/admin` dashboard.** Phase 1 set up the app shell, design system, database
+**Phase 7 of 9 — a holistic polish pass across the whole app.** Phase 1 set up the app shell, design system, database
 connection, and tooling. Phase 2 added the real data models (`Dataset`,
 `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync engine that pulls the
 full catalog + every dataset's records from data.gov.bh into local
@@ -516,6 +516,96 @@ reflecting the new state; the freshly-synced dataset's own public
 straight after (no server restart) and both showed the new data,
 confirming `revalidateTag()` is actually wired up. `SyncLock` was
 confirmed `running: false` before the dev server was stopped.
+
+## Phase 7 — polish pass
+
+A read-through of every page built in Phases 1–6, fixing consistency/quality-floor
+issues rather than adding features. Verified locally (`pnpm dev` against the real
+synced DB, `docker compose` Postgres) at 360px/desktop widths, `pnpm lint` and
+`pnpm build` clean throughout. What was actually wrong, found and fixed:
+
+- **Stray Arabic-Indic digits**: `not-found.tsx`'s "404" heading was literally
+  `٤٠٤` (Arabic-Indic digits), the one place in the whole app that violated the
+  "Latin tabular digits everywhere" rule — a `grep -P '[\x{0660}-\x{0669}]'`
+  across `src` confirmed it was the only offender. Now renders through
+  `NumberLatin` like every other figure.
+- **Unwrapped numbers inside pre-baked Arabic sentences**: `dataset.summaryAr`
+  (Phase 3's template-generated lead sentence on `/dataset/[id]`, e.g. "آخر قيمة
+  مسجلة: 42403 في 2026، بتغير ‑49.5% عن الفترة السابقة.") is a single flat
+  string with its Latin-digit numbers embedded directly in Arabic prose — never
+  wrapped in a `dir="ltr"`/tabular-nums span, unlike every other number in the
+  app. Since it's opaque stored text rather than separate props, fixed with a
+  new small component, `src/components/arabic-text-with-numbers.tsx`
+  (`ArabicTextWithNumbers`), that regex-splits the string and wraps just the
+  numeric tokens (including a trailing `%`/`٪`) — used on the one call site
+  that renders `summaryAr`. Also fixed `buildSummaryAr()` in
+  `src/lib/sync/derived.ts` to emit ASCII `%` instead of the Arabic percent
+  sign `٪` going forward, matching `formatPercent()`'s existing convention
+  (the wrapping component still handles `٪` too, since already-synced rows in
+  the local DB have the old character baked in until they're re-synced).
+- **A real chart-correctness bug in the Phase 3 visualization engine**, found
+  by eyeballing `/dataset/housing-units-by-housing-type-and-occupancy-census-2020`
+  (a `bar-stacked` chart): `buildBarStacked()` picked its category (x-axis) and
+  series (stack) dimensions as "the two lowest-cardinality dimension fields",
+  with no check for whether those two fields actually mean the same thing. This
+  catalog is bilingual — many datasets carry an English field and an Arabic
+  twin describing the exact same value (here: `Occupancy`/"Vacant,Occupied"
+  and `الإشغال`/"شاغر,مشغول") — and when both happen to tie for lowest
+  cardinality, the chart ends up plotting a field against its own translation:
+  every x-axis category has exactly one non-zero stacked segment (since
+  category and series are 1-to-1 correlated), which both looks wrong and
+  completely hides the dataset's actually-interesting dimension (here,
+  `Housing Type`, which never got picked at all). Fixed with a new
+  `isRedundantDimensionPair()` check (data-driven — it tests whether one
+  field's value fully determines the other's across the sampled records, no
+  language-specific assumptions) that `buildBarStacked()` now uses to skip
+  redundant candidate pairs and try the next-lowest-cardinality combination,
+  falling back to `table` (existing, already-safe behavior) if every pair is
+  redundant. Verified against real data: re-synced the affected dataset
+  (`pnpm sync -- --dataset housing-units-by-housing-type-and-occupancy-census-2020
+  --force`) and confirmed the chart now correctly plots Housing Type × Occupancy;
+  re-synced the other 2 locally-present `bar-stacked` datasets plus a 40-dataset
+  batch (`pnpm sync -- --limit 40 --force`) and confirmed no regressions (all
+  still pick sensible, non-redundant pairs; nothing crashed).
+- **A dangling divider hairline on wrap**: the home hero's `HeroStatBand` (4
+  stats) drew its "separated by 1px hairlines" divider with a plain
+  "every item but the first gets a `border-r`" rule, which only makes sense
+  when all 4 items share one row. Below `sm`, the row wraps (confirmed at
+  360px), and whichever stat wraps onto its own new line keeps its right
+  border with no right-hand neighbor to sit next to — a hairline floating at
+  the top of an otherwise-empty edge. Fixed by making the band a single
+  stacked column with horizontal dividers below `sm` (where it's genuinely a
+  list, not a row) and only switching to the row-with-vertical-dividers
+  layout from `sm` up, where it doesn't wrap.
+- **A right-vs-left RTL bug in the design system's own signature element**:
+  `ThemeChip` (the category-rail chips on `/`) implemented the spec's "chip
+  right-border (3px)" accent with `borderInlineEnd`, a *logical* CSS property
+  — which resolves to the physical **left** edge under this app's
+  `dir="rtl"`, not the right. `ThemeTile`/`PublisherTile`'s equivalent
+  colored-stripe accent both correctly use a physical `right-0`, confirming
+  the intended treatment is a fixed physical-right accent (like the card
+  footer's dashed top border — a decorative constant, not something meant to
+  mirror with reading direction). Fixed `ThemeChip` to use physical
+  `borderRight` to match.
+- **`robots.ts`** now `Disallow: /admin` in addition to the existing
+  per-page `robots: { index: false, follow: false }` metadata on
+  `/admin`/`/admin/login` — belt-and-braces so crawlers don't even request
+  the login form.
+- **Admin dashboard duration formatting inconsistency**: the same
+  `formatDuration()` call was wrapped in a `dir="ltr"`/tabular-nums `<span>`
+  in the sync-log table but not in the header "آخر مزامنة" stat card right
+  above it. Made the header card match the table's existing treatment.
+
+Everything else audited and found already correct: keyboard focus-visible
+states (global CSS rule, spot-checked via Tab), `prefers-reduced-motion`
+(global override plus Tailwind's `motion-reduce:` on the admin spinner),
+empty/loading/error states (all plain, natural Arabic, consistent tone and
+terminology — "مملكة البحرين" and "الجهات الحكومية" used consistently
+throughout, no mixed-terminology found), SEO metadata on every route,
+`sitemap.ts`/`robots.ts` route coverage, and chart RTL correctness on the
+already-verified `area`/`multi-line` chart types (canvas `dir="ltr"`,
+custom tooltip/legend forced `dir="rtl"`, digits never garbled — confirmed
+via the rendered DOM text, not just visually).
 
 ## Scripts
 

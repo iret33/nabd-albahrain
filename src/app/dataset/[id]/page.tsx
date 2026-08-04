@@ -16,6 +16,7 @@ import { formatDateAr, stripHtml } from "@/lib/format";
 import { slugify } from "@/lib/slugify";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { NumberLatin } from "@/components/number-latin";
+import { ArabicTextWithNumbers } from "@/components/arabic-text-with-numbers";
 import { DatasetChart } from "@/components/charts/dataset-chart";
 import { RecordsTable } from "@/components/records-table";
 import { EmptyState } from "@/components/empty-state";
@@ -131,7 +132,9 @@ export default async function DatasetPage({ params, searchParams }: Props) {
       </h1>
 
       {dataset.summaryAr && (
-        <p className="mt-4 max-w-3xl text-lg leading-8 text-ink/80">{dataset.summaryAr}</p>
+        <p className="mt-4 max-w-3xl text-lg leading-8 text-ink/80">
+          <ArabicTextWithNumbers text={dataset.summaryAr} />
+        </p>
       )}
 
       {hasRecords ? (

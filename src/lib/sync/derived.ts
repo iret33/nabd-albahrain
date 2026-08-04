@@ -788,6 +788,30 @@ function buildBarH(
   return { vizConfig, chartData };
 }
 
+/**
+ * True when `fieldB` is fully determined by `fieldA` across the sampled
+ * records — every value of `fieldA` co-occurs with exactly one value of
+ * `fieldB`. This catches bilingual duplicate fields, which are common
+ * across this catalog (e.g. an English "Occupancy" column and its Arabic
+ * "الإشغال" twin describing the exact same value): pairing two such fields
+ * as a stacked chart's category + series produces a degenerate chart where
+ * every category bar has exactly one non-zero series segment (because the
+ * "series" is just a translation of the "category"), which both looks
+ * wrong and hides whichever dimension is actually informative.
+ */
+function isRedundantDimensionPair(records: Record<string, unknown>[], fieldA: string, fieldB: string): boolean {
+  const aToB = new Map<string, string>();
+  for (const row of records) {
+    const aVal = toDisplayString(row[fieldA]);
+    const bVal = toDisplayString(row[fieldB]);
+    if (aVal === null || bVal === null) continue;
+    const existing = aToB.get(aVal);
+    if (existing === undefined) aToB.set(aVal, bVal);
+    else if (existing !== bVal) return false;
+  }
+  return aToB.size > 0;
+}
+
 function buildBarStacked(
   records: Record<string, unknown>[],
   dimensions: DimensionField[],
@@ -799,10 +823,22 @@ function buildBarStacked(
   const aggregate = aggregateKindFor(measure);
 
   // Pick the two lowest-cardinality dimensions when more than 2 qualify;
-  // the lower-cardinality one of that pair becomes the stacked series.
+  // the lower-cardinality one of that pair becomes the stacked series. Try
+  // candidate pairs in ascending-cardinality order (so the common case is
+  // unchanged) and skip any pair that's a redundant bilingual/duplicate
+  // encoding of the same concept — see `isRedundantDimensionPair` above.
   const sorted = [...dimensions].sort((a, b) => a.distinctCount - b.distinctCount);
-  const seriesDim = sorted[0];
-  const xDim = sorted[1];
+  let seriesDim: DimensionField | null = null;
+  let xDim: DimensionField | null = null;
+  outer: for (let i = 0; i < sorted.length - 1; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (isRedundantDimensionPair(records, sorted[i].name, sorted[j].name)) continue;
+      seriesDim = sorted[i];
+      xDim = sorted[j];
+      break outer;
+    }
+  }
+  if (!seriesDim || !xDim) return null;
 
   const cellMap = new Map<string, Map<string, { sum: number; count: number }>>();
   const xTotals = new Map<string, number>();
@@ -1036,7 +1072,7 @@ function buildSummaryAr(
       if (prevValue !== null && prevValue !== 0) {
         const pct = ((latest - prevValue) / Math.abs(prevValue)) * 100;
         const sign = pct >= 0 ? "+" : "-";
-        sentence += `، بتغير ${sign}${Math.abs(pct).toFixed(1)}٪ عن الفترة السابقة`;
+        sentence += `، بتغير ${sign}${Math.abs(pct).toFixed(1)}% عن الفترة السابقة`;
       }
     }
     return sentence + ".";

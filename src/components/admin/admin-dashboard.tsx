@@ -241,7 +241,10 @@ export function AdminDashboard({
             <>
               <p className="mt-1 text-sm font-semibold text-sea-900">{formatDateTimeAr(stats.lastSync.startedAt)}</p>
               <p className="mt-0.5 text-xs text-ink/50">
-                المدة: {formatDuration(stats.lastSync.startedAt, stats.lastSync.finishedAt)}
+                المدة:{" "}
+                <span dir="ltr" className="tabular-figures">
+                  {formatDuration(stats.lastSync.startedAt, stats.lastSync.finishedAt)}
+                </span>
               </p>
             </>
           ) : (
