@@ -31,6 +31,14 @@ export function SiteHeader() {
                 الرئيسية
               </Link>
             </li>
+            <li>
+              <Link
+                href="/categories"
+                className="rounded-md transition-colors hover:text-coral"
+              >
+                الفئات
+              </Link>
+            </li>
           </ul>
         </nav>
       </div>

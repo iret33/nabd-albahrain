@@ -21,20 +21,46 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 3 of 9 — visualization-inference engine.** Phase 1 set up the app
-shell, design system, database connection, and tooling. Phase 2 added the
-real data models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the
-sync engine that pulls the full catalog + every dataset's records from
+**Phase 4 of 9 — public-facing pages.** Phase 1 set up the app shell,
+design system, database connection, and tooling. Phase 2 added the real
+data models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync
+engine that pulls the full catalog + every dataset's records from
 data.gov.bh into local Postgres (see [Sync engine](#sync-engine) below).
-This phase implements `computeDerivedFields()`
-(`src/lib/sync/derived.ts`) for real: per-field `statsJson`, a rule-based
-`vizConfig`/`chartData` chart recommendation, and a template-based Arabic
-`summaryAr` — all computed deterministically from each dataset's synced
-records, no AI/LLM calls (see
+Phase 3 implemented `computeDerivedFields()` (`src/lib/sync/derived.ts`):
+per-field `statsJson`, a rule-based `vizConfig`/`chartData` chart
+recommendation, and a template-based Arabic `summaryAr` (see
 [Visualization-inference engine](#visualization-inference-engine) below).
-The home page (`src/app/page.tsx`) is still a placeholder — dataset
-browsing/search pages, actual chart rendering (Recharts), and the admin
-dashboard land in later phases.
+This phase builds the actual public site on top of all of that — every page
+is a Server Component reading Postgres directly via Prisma (no client-side
+fetch waterfalls):
+
+- **`/`** — dark hero with live portal stats (dataset/publisher/record
+  counts, last sync time), a hand-curated "featured stats" band
+  (`src/config/featured.ts`, big number + sparkline per entry, degrades
+  gracefully if an entry isn't synced yet), a category rail (every theme as
+  a colored chip with its dataset count), "الأحدث تحديثاً" (9 most
+  recently-synced datasets), and a dark CTA band linking to `/categories`.
+- **`/categories`** — every theme as a large colored tile with its dataset
+  count.
+- **`/categories/[theme]`** — server-paginated (30/page) grid of dataset
+  cards for one theme.
+- **`/dataset/[id]`** — breadcrumb, title, `summaryAr` as a lead sentence,
+  the Recharts chart picked by `vizConfig` (chart canvas wrapped
+  `dir="ltr"` so time axes read left-to-right, custom tooltip/legend forced
+  `dir="rtl"`), stat chips, direct links to the official CSV/JSON exports
+  and dataset page (never proxied), and a server-paginated (25/page),
+  sortable-by-column-header records table — the one place raw
+  `DatasetRecord` rows reach the client, 25 at a time. A `syncStatus:
+  "partial"` badge shows when a dataset's size guard capped storage.
+
+Theme → color mapping (`src/lib/theme-colors.ts`), Latin-tabular-digit
+number/date formatting (`src/lib/format.ts`), and the cached Prisma query
+layer (`src/lib/queries.ts`, `unstable_cache` tagged `"datasets"` /
+`"dataset:{id}"`) are shared across all of the above. Loading skeletons
+(`src/components/skeletons.tsx`) and plain-Arabic empty states
+(`src/components/empty-state.tsx`) cover the pre-sync / partially-synced /
+zero-result cases everywhere. Search, the admin dashboard, and wiring
+`revalidateTag()` into the sync engine are later phases.
 
 ## Local development
 
@@ -250,6 +276,57 @@ individually-targeted datasets — temporal, categorical, geo, tiny/weird):
   needs each field's schema type/label/annotations, which only exist in
   `Dataset.fieldsJson`, not in the record rows themselves. `engine.ts`'s
   call site was updated accordingly (it already had `dataset` in scope).
+
+## Public pages
+
+Phase 4's routes — see [Project status](#project-status) above for the
+per-route feature list. A few implementation notes worth knowing about:
+
+- **`route.tsx` files calling `notFound()` must not have a route-level
+  `loading.tsx`.** Confirmed empirically while building `/dataset/[id]`: a
+  `loading.tsx` anywhere from the route's own segment up to the root wraps
+  that segment's `page.tsx` in a Suspense boundary, which makes Next.js
+  (15.5.22, both `next dev` and the standalone production server) commit
+  an HTTP 200 status and start streaming *before* an inner `notFound()`
+  call resolves — the `not-found.tsx` body renders correctly, but the
+  status code stays 200 instead of 404. Fixed two ways: (1) the home page
+  moved into a route group (`src/app/(home)/`) so its `loading.tsx`
+  doesn't cascade to sibling routes, and (2) `/dataset/[id]` has no
+  route-level `loading.tsx` at all — it resolves the `notFound()` check
+  synchronously (fast; cached queries), then wraps only the records table
+  in an inline `<Suspense fallback={<RecordsTableSkeleton />}>` further
+  down the tree, which streams safely because it's *after* the not-found
+  decision is already made. `/categories/[theme]` keeps its route-level
+  `loading.tsx` since that route never calls `notFound()` (an unknown/
+  empty theme renders a plain-Arabic empty state instead — see below).
+- **`metas.default.description` from data.gov.bh is simple HTML**
+  (`<p>`, `<br>`, entity-escaped `&amp;` — confirmed across every sampled
+  dataset), not plain text. Rendering it directly produced literal
+  `<p>...&lt;/p&gt;`-style text on the dataset page. `src/lib/format.ts`
+  now exports `stripHtml()` (turns `<br>`/`</p>` into line breaks, drops
+  other tags, decodes the handful of entities actually observed) instead
+  of pulling in an HTML-sanitizer dependency for what is just `<p>`/`<br>`
+  tags from a single trusted source.
+- Unknown/empty `/categories/[theme]` values and empty result sets render
+  a plain-Arabic empty state rather than a 404 — a category page doesn't
+  have the same "this specific resource must exist" semantics as a
+  dataset page, so graceful degradation felt like the better default (and
+  sidesteps the `loading.tsx`/`notFound()` interaction above entirely,
+  since that route never needs to call `notFound()`).
+- While building against real synced data, found that 12 of the (at the
+  time) 32 synced datasets had `vizConfig`/`statsJson`/`summaryAr` stuck
+  `null` — they were synced during Phase 2/3 development *before*
+  `computeDerivedFields()` was implemented, and the sync engine's
+  unchanged-since-last-sync skip (`lastSyncedAt >= sourceModified`)
+  correctly left them alone on subsequent plain `pnpm sync` runs, since
+  their source data genuinely hadn't changed. Not a code bug — the skip
+  logic is working as designed — but it left stale Phase-2-era nulls on
+  disk that the dataset page needs to render around anyway (handled via
+  the `vizConfig === null` → "no chart" fallback), so backfilled all 12
+  locally with `pnpm sync -- --dataset <id> --force` to get a realistic
+  mix of chart types (`area`/`multi-line`/`bar-stacked`/`table` all now
+  present locally) to actually verify the page against. A full sync run
+  in a later phase will pick up everything else.
 
 ## Scripts
 
