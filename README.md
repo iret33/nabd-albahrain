@@ -21,18 +21,18 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 4 of 9 — public-facing pages.** Phase 1 set up the app shell,
-design system, database connection, and tooling. Phase 2 added the real
-data models (`Dataset`, `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync
-engine that pulls the full catalog + every dataset's records from
-data.gov.bh into local Postgres (see [Sync engine](#sync-engine) below).
-Phase 3 implemented `computeDerivedFields()` (`src/lib/sync/derived.ts`):
-per-field `statsJson`, a rule-based `vizConfig`/`chartData` chart
-recommendation, and a template-based Arabic `summaryAr` (see
+**Phase 5 of 9 — remaining public pages, SEO, and global error/empty
+states.** Phase 1 set up the app shell, design system, database
+connection, and tooling. Phase 2 added the real data models (`Dataset`,
+`DatasetRecord`, `SyncLog`, `SyncLock`) and the sync engine that pulls the
+full catalog + every dataset's records from data.gov.bh into local
+Postgres (see [Sync engine](#sync-engine) below). Phase 3 implemented
+`computeDerivedFields()` (`src/lib/sync/derived.ts`): per-field
+`statsJson`, a rule-based `vizConfig`/`chartData` chart recommendation,
+and a template-based Arabic `summaryAr` (see
 [Visualization-inference engine](#visualization-inference-engine) below).
-This phase builds the actual public site on top of all of that — every page
-is a Server Component reading Postgres directly via Prisma (no client-side
-fetch waterfalls):
+Phase 4 built the core public site — every page is a Server Component
+reading Postgres directly via Prisma (no client-side fetch waterfalls):
 
 - **`/`** — dark hero with live portal stats (dataset/publisher/record
   counts, last sync time), a hand-curated "featured stats" band
@@ -47,11 +47,68 @@ fetch waterfalls):
 - **`/dataset/[id]`** — breadcrumb, title, `summaryAr` as a lead sentence,
   the Recharts chart picked by `vizConfig` (chart canvas wrapped
   `dir="ltr"` so time axes read left-to-right, custom tooltip/legend forced
-  `dir="rtl"`), stat chips, direct links to the official CSV/JSON exports
-  and dataset page (never proxied), and a server-paginated (25/page),
+  `dir="rtl"`), stat chips (publisher is now a link to `/publishers/[slug]`,
+  added this phase), direct links to the official CSV/JSON exports and
+  dataset page (never proxied), and a server-paginated (25/page),
   sortable-by-column-header records table — the one place raw
   `DatasetRecord` rows reach the client, 25 at a time. A `syncStatus:
   "partial"` badge shows when a dataset's size guard capped storage.
+
+This phase (5) rounds out the public site:
+
+- **`/publishers`** — every distinct publisher (42 raw values / 41 URLs —
+  see the slug-collision note below) as the same colored-tile grid style as
+  `/categories`, via the new `PublisherTile` component. Tile color reuses
+  `themeColor()`'s deterministic hash fallback (no publisher name matches
+  its keyword rules, so every publisher gets a stable hash-picked color).
+- **`/publishers/[slug]`** — same visual + behavioral pattern as
+  `/categories/[theme]`, including rendering a plain-Arabic empty state
+  instead of `notFound()` for an unmatched slug (keeps a route-level
+  `loading.tsx` safe — see the `notFound()`/`loading.tsx` interaction note
+  in the existing bullet below).
+- **`/search?q=`** — ILIKE across `titleClean`/`description` (accelerated by
+  the pg_trgm GIN indexes from Phase 2's
+  `20260803224500_trgm_search_indexes` migration — Postgres's trgm operator
+  classes let the planner use a GIN index for `ILIKE '%term%'`, not just
+  prefix search) plus `publisher`/`theme` (no index needed at 512 rows).
+  Empty state uses the exact spec copy: "لا توجد نتائج لبحثك — جرّب كلمة
+  أخرى". A shared `SearchForm` component (`src/components/search-form.tsx`)
+  is used both here and as a compact search box in the site header.
+- **`/about`** — عن المشروع: independent-project statement, data.gov.bh
+  source attribution, daily refresh cadence, an authoritative-figures
+  disclaimer, and a minimal contact line (links to hekkapp.com, matching
+  the contact reference already used in the sync engine's User-Agent
+  string — no email address was invented for this).
+- **`sitemap.ts`** — home, `/categories`, one entry per theme, `/publishers`,
+  one entry per publisher slug, one entry per dataset (592 URLs against the
+  current local sync). `/search` is deliberately excluded (no canonical URL
+  without a query); `/about` is included as a normal low-priority page.
+- **`robots.ts`** — allows everything, points at `/sitemap.xml`.
+- **`error.tsx`** — Arabic-voice global error boundary (Client Component,
+  per the Next.js convention) with a retry button and a link home.
+- **`not-found.tsx`** — extended (was already Arabic-voice from Phase 4)
+  with an explicit `metadata` title and the new `SearchForm`, so a dead
+  link is also a recovery path.
+- **`src/lib/slugify.ts`** — the one slugify helper used by both
+  `/publishers` and `/publishers/[slug]`, per spec. **Real synced data has
+  a genuine slug collision**: `"Meteorological Directorate \ Ministry of
+  Transportation and Telecommunications"` (7 datasets) and
+  `"Meteorological Directorate\Ministry of Transportation and
+  Telecommunications"` (1 dataset, no spaces around the `\`) both slugify
+  to the same string. `getPublisherCounts()`/`getDatasetsByPublisherSlug()`
+  in `src/lib/queries.ts` treat slug → publisher-name as one-to-many
+  everywhere and merge such collisions into a single tile/page (8 datasets
+  total under one URL) instead of silently making one variant
+  unreachable — not a bug introduced this phase, just messy upstream data
+  handled defensively.
+- Root layout now sets `metadataBase` (`src/lib/site.ts`, reads
+  `NEXT_PUBLIC_SITE_URL`, falls back to the documented production domain)
+  so sitemap/OG URLs resolve to real absolute URLs even without that env
+  var set.
+- Site header (`src/components/site-header.tsx`) and footer
+  (`src/components/site-footer.tsx`) both extended with nav links to the
+  new routes; the footer's mandatory data.gov.bh attribution line is
+  unchanged from Phase 4.
 
 Theme → color mapping (`src/lib/theme-colors.ts`), Latin-tabular-digit
 number/date formatting (`src/lib/format.ts`), and the cached Prisma query
@@ -59,7 +116,7 @@ layer (`src/lib/queries.ts`, `unstable_cache` tagged `"datasets"` /
 `"dataset:{id}"`) are shared across all of the above. Loading skeletons
 (`src/components/skeletons.tsx`) and plain-Arabic empty states
 (`src/components/empty-state.tsx`) cover the pre-sync / partially-synced /
-zero-result cases everywhere. Search, the admin dashboard, and wiring
+zero-result cases everywhere. The admin dashboard and wiring
 `revalidateTag()` into the sync engine are later phases.
 
 ## Local development
@@ -279,7 +336,7 @@ individually-targeted datasets — temporal, categorical, geo, tiny/weird):
 
 ## Public pages
 
-Phase 4's routes — see [Project status](#project-status) above for the
+Phase 4 + 5's routes — see [Project status](#project-status) above for the
 per-route feature list. A few implementation notes worth knowing about:
 
 - **`route.tsx` files calling `notFound()` must not have a route-level
@@ -299,6 +356,10 @@ per-route feature list. A few implementation notes worth knowing about:
   decision is already made. `/categories/[theme]` keeps its route-level
   `loading.tsx` since that route never calls `notFound()` (an unknown/
   empty theme renders a plain-Arabic empty state instead — see below).
+  Phase 5's `/publishers/[slug]` deliberately follows the same pattern as
+  `/categories/[theme]` (empty state instead of `notFound()` for an
+  unmatched slug) specifically so it could keep a route-level
+  `loading.tsx` too, rather than reinventing the `/dataset/[id]` approach.
 - **`metas.default.description` from data.gov.bh is simple HTML**
   (`<p>`, `<br>`, entity-escaped `&amp;` — confirmed across every sampled
   dataset), not plain text. Rendering it directly produced literal

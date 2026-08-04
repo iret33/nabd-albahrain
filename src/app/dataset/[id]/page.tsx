@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
@@ -12,6 +13,7 @@ import {
 } from "@/lib/queries";
 import { themeColor } from "@/lib/theme-colors";
 import { formatDateAr, stripHtml } from "@/lib/format";
+import { slugify } from "@/lib/slugify";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { NumberLatin } from "@/components/number-latin";
 import { DatasetChart } from "@/components/charts/dataset-chart";
@@ -154,7 +156,21 @@ export default async function DatasetPage({ params, searchParams }: Props) {
       <div className="mt-6 flex flex-wrap gap-3">
         <StatChip label="السجلات" value={<NumberLatin value={hasRecords ? dataset.sourceCount : dataset.recordsCount} />} />
         <StatChip label="الحقول" value={<NumberLatin value={fields.length} />} />
-        <StatChip label="الناشر" value={dataset.publisher || "غير معروف"} />
+        <StatChip
+          label="الناشر"
+          value={
+            dataset.publisher ? (
+              <Link
+                href={`/publishers/${slugify(dataset.publisher)}`}
+                className="transition-colors hover:text-coral"
+              >
+                {dataset.publisher}
+              </Link>
+            ) : (
+              "غير معروف"
+            )
+          }
+        />
         <StatChip label="آخر تعديل بالمصدر" value={formatDateAr(dataset.sourceModified)} />
       </div>
 

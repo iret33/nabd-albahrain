@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Tajawal, IBM_Plex_Sans_Arabic } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 const tajawal = Tajawal({
@@ -19,6 +20,7 @@ const ibmPlexSansArabic = IBM_Plex_Sans_Arabic({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "نبض البحرين | Nabd Al-Bahrain",
   description:
     "لوحة بيانات عربية مستقلة تعرض بصريًا كل مجموعات البيانات المفتوحة في بوابة data.gov.bh الرسمية لمملكة البحرين.",

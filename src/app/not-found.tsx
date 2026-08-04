@@ -1,4 +1,10 @@
 import Link from "next/link";
+import type { Metadata } from "next";
+import { SearchForm } from "@/components/search-form";
+
+export const metadata: Metadata = {
+  title: "الصفحة غير موجودة | نبض البحرين",
+};
 
 export default function NotFound() {
   return (
@@ -6,9 +12,12 @@ export default function NotFound() {
       <p className="font-display text-6xl font-black text-pearl">٤٠٤</p>
       <h1 className="mt-4 font-display text-2xl font-bold text-sea-900">الصفحة غير موجودة</h1>
       <p className="mt-2 max-w-md text-sm leading-7 text-ink/60">
-        الصفحة التي تبحث عنها غير موجودة أو تم نقلها. جرّب العودة إلى الصفحة الرئيسية أو تصفح
-        الفئات.
+        الصفحة التي تبحث عنها غير موجودة أو تم نقلها. جرّب العودة إلى الصفحة الرئيسية، تصفح
+        الفئات، أو ابحث عن ما تريد.
       </p>
+      <div className="mt-6 w-full max-w-sm">
+        <SearchForm />
+      </div>
       <div className="mt-6 flex flex-wrap justify-center gap-3">
         <Link
           href="/"

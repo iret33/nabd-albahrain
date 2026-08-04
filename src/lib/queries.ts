@@ -14,6 +14,7 @@
 import { Prisma } from "@prisma/client";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { slugify } from "@/lib/slugify";
 import type { VizConfig, StatsJson } from "@/lib/sync/derived";
 import type { CatalogField } from "@/lib/sync/schemas";
 
@@ -195,6 +196,150 @@ export function getDatasetsByTheme(theme: string, page: number): Promise<Paginat
       return { items, total, page: safePage, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
     },
     ["datasets-by-theme", theme, String(safePage)],
+    { tags: ["datasets"] },
+  )();
+}
+
+// ---------------------------------------------------------------------------
+// /publishers + /publishers/[slug]
+//
+// Unlike themes (short strings, used directly/encoded as the URL segment),
+// publisher names are long free text, so they get a slugified URL via
+// `slugify()` (src/lib/slugify.ts). Real synced data has one pair of
+// publisher strings that only differ by incidental whitespace around a
+// "\" separator and collide on the same slug (see slugify.ts's docstring)
+// — so slug -> publisher-name is treated as one-to-many everywhere below,
+// and the listing merges any such collisions into a single tile instead
+// of producing two tiles that would both link to the same URL.
+// ---------------------------------------------------------------------------
+
+export interface PublisherCount {
+  slug: string;
+  name: string; // canonical display name (highest dataset count among collisions, ties broken alphabetically)
+  count: number;
+  names: string[]; // every raw `publisher` value that maps to this slug (usually just [name])
+}
+
+export const getPublisherCounts = unstable_cache(
+  async (): Promise<PublisherCount[]> => {
+    const groups = await prisma.dataset.groupBy({
+      by: ["publisher"],
+      where: { publisher: { not: null } },
+      _count: { _all: true },
+    });
+
+    const bySlug = new Map<string, { name: string; count: number; names: string[] }>();
+    for (const g of groups) {
+      const raw = g.publisher as string;
+      const count = g._count._all;
+      const slug = slugify(raw);
+      const existing = bySlug.get(slug);
+      if (!existing) {
+        bySlug.set(slug, { name: raw, count, names: [raw] });
+        continue;
+      }
+      existing.names.push(raw);
+      existing.count += count;
+      // Prefer the raw name with the most datasets as the display name;
+      // break ties alphabetically for determinism.
+      const currentPrimaryCount = existing.count - count; // count before this merge
+      if (count > currentPrimaryCount || (count === currentPrimaryCount && raw.localeCompare(existing.name) < 0)) {
+        existing.name = raw;
+      }
+    }
+
+    return [...bySlug.entries()]
+      .map(([slug, v]) => ({ slug, name: v.name, count: v.count, names: v.names }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  },
+  ["publisher-counts"],
+  { tags: ["datasets"] },
+);
+
+export function getDatasetsByPublisherSlug(
+  slug: string,
+  page: number,
+): Promise<PaginatedDatasets & { publisherName: string | null }> {
+  const pageSize = THEME_PAGE_SIZE;
+  const safePage = Math.max(1, page);
+  return unstable_cache(
+    async () => {
+      const counts = await getPublisherCounts();
+      const match = counts.find((p) => p.slug === slug);
+      if (!match) {
+        return { items: [], total: 0, page: safePage, pageSize, totalPages: 1, publisherName: null };
+      }
+
+      const skip = (safePage - 1) * pageSize;
+      const where: Prisma.DatasetWhereInput = { publisher: { in: match.names } };
+      const [items, total] = await Promise.all([
+        prisma.dataset.findMany({
+          where,
+          orderBy: [{ titleClean: "asc" }, { id: "asc" }],
+          skip,
+          take: pageSize,
+          select: DATASET_CARD_SELECT,
+        }),
+        prisma.dataset.count({ where }),
+      ]);
+      return {
+        items,
+        total,
+        page: safePage,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        publisherName: match.name,
+      };
+    },
+    ["datasets-by-publisher-slug", slug, String(safePage)],
+    { tags: ["datasets"] },
+  )();
+}
+
+// ---------------------------------------------------------------------------
+// /search?q=
+//
+// ILIKE across titleClean/description (accelerated by the pg_trgm GIN
+// indexes from prisma/migrations/20260803224500_trgm_search_indexes —
+// Postgres's pg_trgm operator classes let the planner use a GIN index for
+// `ILIKE '%term%'`, not just prefix search) plus publisher/theme (no
+// index needed — 512 rows total, a sequential scan on those two columns
+// is fast regardless).
+// ---------------------------------------------------------------------------
+
+export function searchDatasets(query: string, page: number): Promise<PaginatedDatasets & { query: string }> {
+  const pageSize = THEME_PAGE_SIZE;
+  const safePage = Math.max(1, page);
+  const q = query.trim();
+
+  if (!q) {
+    return Promise.resolve({ items: [], total: 0, page: safePage, pageSize, totalPages: 1, query: q });
+  }
+
+  return unstable_cache(
+    async () => {
+      const where: Prisma.DatasetWhereInput = {
+        OR: [
+          { titleClean: { contains: q, mode: "insensitive" } },
+          { description: { contains: q, mode: "insensitive" } },
+          { publisher: { contains: q, mode: "insensitive" } },
+          { theme: { contains: q, mode: "insensitive" } },
+        ],
+      };
+      const skip = (safePage - 1) * pageSize;
+      const [items, total] = await Promise.all([
+        prisma.dataset.findMany({
+          where,
+          orderBy: [{ titleClean: "asc" }, { id: "asc" }],
+          skip,
+          take: pageSize,
+          select: DATASET_CARD_SELECT,
+        }),
+        prisma.dataset.count({ where }),
+      ]);
+      return { items, total, page: safePage, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), query: q };
+    },
+    ["search-datasets", q, String(safePage)],
     { tags: ["datasets"] },
   )();
 }
