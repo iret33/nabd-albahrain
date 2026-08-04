@@ -1,4 +1,36 @@
+# Production Compose file for نبض البحرين (Nabd Al-Bahrain).
+#
+# Local dev: this file is also the dev-DB bootstrap — run just the `db`
+# service (`docker compose up -d db`) and point `pnpm dev` at it directly;
+# see the README's "Local development" section. Don't run `app` locally via
+# Docker for day-to-day dev — `pnpm dev` gives hot reload, this doesn't.
+#
+# Production bring-up: `docker compose up -d --build` starts both services.
+# No port is published to the outside world except `app` on
+# 127.0.0.1:3000 — the existing Cloudflare Tunnel on the host is what
+# actually exposes it publicly (see the README's "Production deployment"
+# section). `db` is likewise bound to 127.0.0.1 only, for local
+# inspection/backup access from the host — never reachable from outside it.
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped

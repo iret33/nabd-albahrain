@@ -21,7 +21,18 @@ data.gov.bh. Every page attributes the official source and links back to it.
 
 ## Project status
 
-**Phase 7 of 9 — a holistic polish pass across the whole app.** Phase 1 set up the app shell, design system, database
+**Phase 8 of 9 — production deployment artifacts, then a full real sync of
+the entire live catalog.** This phase added the `Dockerfile` +
+`docker-compose.yml` production setup, finalized `.env.example`, wrote the
+production/cron/Cloudflare-Tunnel deployment instructions (see
+[Production deployment](#production-deployment) below), ran a full
+`pnpm sync -- --force` against the live data.gov.bh API into local Postgres,
+and refined `src/config/featured.ts` with real entries picked from the
+now-fully-synced catalog. See
+[Full sync results](#full-sync-results-phase-8) below for the outcome and
+what the long tail of real-world datasets broke (and how it was fixed).
+
+Phase 1 set up the app shell, design system, database
 connection, and tooling. Phase 2 added the real data models (`Dataset`,
 `DatasetRecord`, `SyncLog`, `SyncLock`) and the sync engine that pulls the
 full catalog + every dataset's records from data.gov.bh into local
@@ -152,13 +163,16 @@ pnpm install
 ### 2. Start Postgres
 
 ```bash
-docker compose up -d
+docker compose up -d db
 ```
 
-This starts a single `db` service (`postgres:16-alpine`) bound to
-`127.0.0.1:5432`, with a named volume (`pgdata`) and a healthcheck. This
-compose file is for **local dev only** — the production compose file
-(adding an `app` service) is created in a later phase.
+`docker-compose.yml` now describes the full **production** stack (`app` +
+`db` — see [Production deployment](#production-deployment) below), but for
+day-to-day local dev you only want the database container, not `app` —
+`pnpm dev` on your host gives you hot reload, a container running `next
+start` doesn't. `docker compose up -d db` starts just the `db` service
+(`postgres:16-alpine`) bound to `127.0.0.1:5432`, with a named volume
+(`pgdata`) and a healthcheck.
 
 #### Local dev without Docker
 
@@ -173,8 +187,8 @@ createdb -O nabd nabd
 psql -d nabd -c "ALTER USER nabd WITH PASSWORD 'nabd';"
 ```
 
-Then point `DATABASE_URL` in `.env` at `localhost:5432` as usual (see
-`.env.example`) — the app doesn't care whether Postgres is containerized.
+Then point `DATABASE_URL` in `.env` at `localhost:5432` as usual (see step 3
+below) — the app doesn't care whether Postgres is containerized.
 
 ### 3. Configure environment variables
 
@@ -182,9 +196,23 @@ Then point `DATABASE_URL` in `.env` at `localhost:5432` as usual (see
 cp .env.example .env
 ```
 
-The defaults in `.env.example` match the `docker compose` service above, so
-no edits are needed for local dev. Fill in real random values for
-`ADMIN_TOKEN` / `SYNC_TOKEN` before deploying anywhere non-local.
+**`.env.example` now models production defaults** (it's meant to be copied
+straight onto the VPS and mostly work as-is — see
+[Production deployment](#production-deployment)), since inside
+`docker-compose.yml`'s network the `app` container reaches Postgres at the
+service name `db`, not `localhost`. For **local dev**, where `pnpm dev` runs
+directly on your host (outside Docker) against the `db` container's
+host-published port, edit the two values that differ:
+
+```bash
+DATABASE_URL=postgresql://nabd:nabd@localhost:5432/nabd
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+```
+
+Everything else (`ADMIN_TOKEN`, `SYNC_TOKEN`, `SYNC_CONCURRENCY`) can stay
+as copied for local dev, but fill in real random values for `ADMIN_TOKEN` /
+`SYNC_TOKEN` before deploying anywhere non-local — generate with e.g.
+`openssl rand -hex 32`.
 
 ### 4. Run database migrations
 
@@ -199,6 +227,32 @@ pnpm dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+### 6. Run a first test sync
+
+Before syncing the entire ~512-dataset catalog (which, respecting the
+politeness rules in [Data source](#data-source) below, takes a genuinely
+long time), sanity-check the pipeline end-to-end against a small slice:
+
+```bash
+pnpm sync -- --limit 10
+```
+
+This fetches the full catalog (metadata only, cheap) then syncs records for
+just the first 10 datasets (catalog order). Check the summary it prints, or
+open `/admin` (see [Sync API & admin dashboard](#sync-api--admin-dashboard))
+and confirm those 10 show `syncStatus: "ok"`. Once that looks right, run a
+full sync:
+
+```bash
+pnpm sync -- --force
+```
+
+`--force` re-fetches every dataset's records even if `sourceModified` looks
+unchanged since the last sync — worth doing for the first full run so
+nothing is skipped based on stale `lastSyncedAt` state from earlier partial
+runs. See [Full sync results](#full-sync-results-phase-8) below for what
+this actually produced against the live catalog.
 
 ## Design system
 
@@ -606,6 +660,236 @@ throughout, no mixed-terminology found), SEO metadata on every route,
 already-verified `area`/`multi-line` chart types (canvas `dir="ltr"`,
 custom tooltip/legend forced `dir="rtl"`, digits never garbled — confirmed
 via the rendered DOM text, not just visually).
+
+## Production deployment
+
+Phase 8. Everything below produces **local files only** — no remote server,
+DNS, or tunnel config was touched by this phase. The steps that do touch
+real infrastructure (marked below) are for a human to run directly on the
+VPS.
+
+### Overview
+
+- `Dockerfile` — multi-stage build (`node:22-alpine`, pnpm, Next's
+  `output: "standalone"`). See the comment block at the top of the file for
+  why the final stage overlays the builder's complete `node_modules` on top
+  of the standalone output (a deliberate workaround for Prisma's native
+  query-engine binary not being reliably traced by Next, combined with
+  pnpm's content-addressed `node_modules/.pnpm/...` store layout).
+- `docker/entrypoint.sh` — runs `prisma migrate deploy` (safe/idempotent —
+  applies only not-yet-applied migrations) before starting the server, so a
+  container never serves traffic against a schema it hasn't migrated to.
+- `docker-compose.yml` — now describes the **production** stack: `app`
+  (built from the `Dockerfile`, bound to `127.0.0.1:3000` only, `restart:
+  unless-stopped`, a healthcheck against `GET /api/health`) and `db`
+  (`postgres:16-alpine`, named volume, healthcheck), with `app` waiting on
+  `db`'s healthcheck via `depends_on: condition: service_healthy`. No port
+  is published to the outside world — see
+  [Cloudflare Tunnel](#cloudflare-tunnel-manual-vps-step) below for how
+  `data.hekkapp.com` actually reaches port 3000.
+- `src/app/api/health/route.ts` — the endpoint the `app` healthcheck hits.
+  Deliberately doesn't touch Postgres (a DB hiccup should surface as a
+  normal error on real pages, not flap the container's health status on top
+  of a database problem) — it only proves the Next.js server itself is
+  responding.
+- `.env.example` — production defaults (`DATABASE_URL` pointed at the `db`
+  service name, `NEXT_PUBLIC_SITE_URL=https://data.hekkapp.com`). Copy it to
+  `.env` on the VPS and replace `ADMIN_TOKEN`/`SYNC_TOKEN` with real random
+  values (e.g. `openssl rand -hex 32`) — never deploy with the placeholder
+  `change-me-long-random` values.
+
+### Bringing the stack up (on the VPS, once Docker + this repo are there)
+
+```bash
+git clone <this-repo> nabd-albahrain
+cd nabd-albahrain
+cp .env.example .env
+# edit .env: real ADMIN_TOKEN / SYNC_TOKEN (openssl rand -hex 32 for each)
+docker compose up -d --build
+```
+
+This builds the `app` image, starts `db` first, waits for its healthcheck,
+then starts `app` — which runs `prisma migrate deploy` (applying the schema
+to a fresh database) before starting the server. Check both containers are
+healthy:
+
+```bash
+docker compose ps
+```
+
+Then run the first sync (see [Daily sync cron](#daily-sync-cron-job-manual-vps-step)
+below for the same call, automated) to populate the database:
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $SYNC_TOKEN" http://127.0.0.1:3000/api/sync
+```
+
+This kicks off a background full sync (fire-and-forget — see
+[Sync API & admin dashboard](#sync-api--admin-dashboard) above); watch its
+progress via `docker compose logs -f app` or by polling
+`GET /api/sync/status`, or from `/admin` once DNS is live.
+
+### Daily sync cron job (manual VPS step)
+
+Add this line to the **host's** crontab (`crontab -e`; not inside the
+container) — data.gov.bh publishes on its own schedule, so a nightly refresh
+keeps the mirror current without hammering the source:
+
+```cron
+15 3 * * * curl -fsS -X POST -H "Authorization: Bearer $SYNC_TOKEN" http://127.0.0.1:3000/api/sync >> /var/log/nabd-sync.log 2>&1
+```
+
+Replace `$SYNC_TOKEN` with the literal value from the VPS's `.env` (cron
+doesn't inherit your shell's environment — either paste the real token
+inline, or `source`/export it from a file crontab reads first). `curl` talks
+to `127.0.0.1:3000` because that's the only interface `app` is bound to —
+this line only works run from the VPS itself, never from outside it.
+
+### Cloudflare Tunnel (manual VPS step)
+
+The VPS already runs `cloudflared` for other services on an existing
+tunnel — this just adds one more ingress rule, it doesn't create a new
+tunnel:
+
+1. Edit the existing tunnel's config (typically
+   `/etc/cloudflared/config.yml` or `~/.cloudflared/config.yml`) and add an
+   ingress rule mapping the new hostname to this app's local port, **above**
+   the catch-all `service: http_status:404` rule (Cloudflare Tunnel ingress
+   rules are matched top-to-bottom, first match wins):
+
+   ```yaml
+   ingress:
+     - hostname: data.hekkapp.com
+       service: http://localhost:3000
+     # ... existing rules for other hostnames on this tunnel ...
+     - service: http_status:404
+   ```
+
+2. Route the DNS record to this tunnel:
+
+   ```bash
+   cloudflared tunnel route dns <tunnel-name> data.hekkapp.com
+   ```
+
+3. Restart `cloudflared` (e.g. `sudo systemctl restart cloudflared`, or
+   however it's run on that host) to pick up the config change.
+
+No port is opened on the VPS firewall for this — `app` is bound to
+`127.0.0.1:3000` only (see `docker-compose.yml`), reachable exclusively via
+the tunnel's outbound-only connection to Cloudflare. TLS terminates at
+Cloudflare's edge; traffic from Cloudflare to `cloudflared` to `app` on the
+VPS is plain HTTP over loopback, which is fine since it never leaves the
+host.
+
+## Full sync results (Phase 8)
+
+`pnpm sync -- --force` was run against the live data.gov.bh API into local
+Postgres (started from a catalog that already had metadata for all 512
+datasets from earlier phases' partial syncs — `--force` re-fetched every
+dataset's records regardless). Result:
+
+```
+processed: 512
+succeeded: 512 (skipped/unchanged: 0)
+failed:    0
+```
+
+- **507 `ok`, 5 `partial`, 0 `error`, 0 `pending`** — every dataset in the
+  live catalog synced successfully; the 95%-`ok`/`partial` bar from the
+  spec was cleared at 100%, so there was no failures table to iterate on
+  in `/admin`. The 5 `partial` datasets (`05-import-2021`, `04-import-2022`,
+  `import-1-2025`, `import-2024`,
+  `01-import-non-oil-classified-by-commodity-and-country-for-2023` — all
+  detailed trade-by-commodity-and-country tables) each had 310,000–325,000
+  source rows, correctly hit the 300,000-row hard cap, and stored the first
+  50,000 as designed.
+- **1,212,280 `DatasetRecord` rows** stored across all datasets.
+- **Wall-clock time: ~6 minutes 38 seconds** (`02:00:43`–`02:07:21`) for
+  the full catalog — faster than the "genuinely long time" the task brief
+  expected, since most of this catalog's datasets are small statistical
+  tables rather than huge exports; the politeness rules (concurrency 3,
+  ~250ms stagger, 2 retries with backoff) were never visibly a bottleneck.
+- **No dataset schema surprises the sync engine didn't already handle** —
+  0 null `theme`, 0 null `publisher`, 0 null `vizConfig`/`summaryAr`, 0
+  empty exports. This isn't luck: Phases 2/3's Zod schemas, per-field
+  classification, and the `try/catch` wrapping in
+  `engine.ts`/`derived.ts` (see
+  [Sync engine](#sync-engine)/[Visualization-inference engine](#visualization-inference-engine)
+  above) were already written defensively enough that the long tail of
+  the real catalog didn't need new special-casing.
+- **`vizConfig` chart-type distribution** across all 512:
+  multi-line 269, area 125, bar-stacked 96, table 18, histogram 4 (0
+  `bar-h`, correctly superseded by earlier rules in the decision tree
+  whenever they also matched). The 18 `table` fallbacks spot-checked as
+  genuinely correct fallbacks, not a bug — mostly `geographical-locations-of-*`
+  point-data datasets (no real temporal/measure axis) and inspection-result
+  tables.
+
+**Two real bugs were found and fixed while doing this real, whole-catalog
+run** — not in the sync engine itself (which held up perfectly), but in
+how the app *serves* real data in production and *summarizes* it on cards:
+
+1. **The Docker build was broken by a static-rendering bug that only a
+   real production build (not `pnpm dev`) would ever surface.** `/`,
+   `/categories`, `/publishers`, `/search`, and `sitemap.xml` are all
+   Server Components that read Postgres directly with no `dynamic` export,
+   so `next build` tried to fully prerender them as static HTML at *build*
+   time — which requires a live, reachable `DATABASE_URL`. `docker build`
+   (correctly, by design — see [Production deployment](#production-deployment))
+   never has a database reachable during the image build, so this failed
+   outright with `PrismaClientInitializationError: Environment variable
+   not found: DATABASE_URL` prerendering `/`. Fixed by adding
+   `export const dynamic = "force-dynamic"` to each of those routes (see
+   the comment on `src/app/(home)/page.tsx` for the full reasoning) —
+   confirmed by a clean `docker build` afterward, plus running the built
+   image end-to-end against a real `db` container (`prisma migrate
+   deploy` applied, then `/`, `/categories`, `/sitemap.xml`,
+   `/dataset/01-unemployment-monthly` all returned 200, an unknown dataset
+   404'd, and an unauthenticated `POST /api/sync` 401'd).
+2. **`extractFeaturedMetric()` (`src/lib/chart-data.ts`) silently produced
+   wrong headline numbers for a common real-data pattern**, found while
+   picking `src/config/featured.ts` entries: several multi-line datasets'
+   series include an explicit "Total" value *alongside* its own
+   sub-components (e.g. `01-caa-monthly-passenger-movement-at-bahrain-international-airport`'s
+   `data_type` series is `["Passengers Total", "Passengers Disembark",
+   "Passengers Transfers", "Passengers Embark", "Passengers Transit"]`).
+   The old code summed every series value, double-counting the total
+   against its own parts — real airport passengers ~1.5M was rendering as
+   ~4.7M. Fixed with `pickTotalSeriesKey()`: when a multi-line series
+   includes an already-labeled total, use that value directly instead of
+   summing everything. This fix lives in the shared view-model helper used
+   by every `DatasetCard` sparkline site-wide, not just the featured band,
+   so it corrects this pattern everywhere it occurs in the catalog, not
+   only for the 2 entries below that happened to trigger it
+   (`01-caa-monthly-passenger-movement-at-bahrain-international-airport`,
+   `01-container-statistics-at-khalifa-bin-salman-port`). Separately, a
+   *third* class of the same underlying problem
+   (`01-unemployment-monthly`'s multi-line series mixes a rate percentage
+   with a headcount in the same sum, and
+   `01-consumer-price-index-division-and-group-index-number`'s `area`
+   chart — a pre-existing Phase 4 pick — sums CPI index *points* across
+   categories into a meaningless ~42,000, per the known limitation already
+   documented in
+   [Visualization-inference engine](#visualization-inference-engine)
+   above) has no reliable data-driven fix, so those datasets were simply
+   **not** picked as featured entries rather than shipped with a
+   misleading number — see the doc comment in `src/config/featured.ts` for
+   the full reasoning behind every entry that was picked vs. rejected.
+
+`src/config/featured.ts` was refined to 6 entries picked from the real,
+fully-synced catalog and individually verified against real `chartData`
+(not just "a chart exists"): population, live births, registered vehicles,
+airport passengers, port container throughput, and governmental schools —
+spanning Population, Births and Deaths, and Transportation/Education
+themes. Spot-checked on `/` after a cold restart (`rm -rf .next && pnpm
+dev`, needed because `unstable_cache`'s on-disk Data Cache persists across
+dev-server restarts and this sync ran via the CLI, which — unlike
+`POST /api/sync` — never calls `revalidateTag()`; a production container
+never hits this, since each fresh container starts with an empty cache):
+all 6 cards render with the exact expected numbers (population
+1,603,260; live births 16,787; vehicles 794,677; airport passengers
+1,497,470.61; port containers 107,010; schools 209), correct Arabic
+labels, and working sparklines.
 
 ## Scripts
 

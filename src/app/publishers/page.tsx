@@ -8,6 +8,11 @@ export const metadata: Metadata = {
   description: "كل الجهات الحكومية الناشرة لبيانات مفتوحة في بوابة data.gov.bh لمملكة البحرين.",
 };
 
+// Phase 8 fix: without this, `next build` tries to statically prerender
+// this DB-backed route at *build* time, which requires a live DATABASE_URL
+// — broke the Docker build. See the longer explanation on `src/app/(home)/page.tsx`.
+export const dynamic = "force-dynamic";
+
 export default async function PublishersPage() {
   const publishers = await getPublisherCounts();
 

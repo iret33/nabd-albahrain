@@ -19,6 +19,27 @@ import { DatasetCard } from "@/components/dataset-card";
 import { EmptyState } from "@/components/empty-state";
 import { Sparkline } from "@/components/charts/sparkline";
 
+/**
+ * Phase 8 fix: this page reads Postgres directly (via the `unstable_cache`
+ * layer in `@/lib/queries`, tagged for `revalidateTag()` invalidation —
+ * see the sync API writeup below), which is exactly the pattern Next.js
+ * documents for a *statically rendered* page with tag-based revalidation.
+ * Without an explicit `dynamic` export, `next build` therefore tried to
+ * fully prerender this route as static HTML at *build* time, which
+ * requires a live, migrated `DATABASE_URL` reachable during the build —
+ * confirmed live: `docker build` failed with `PrismaClientInitializationError:
+ * Environment variable not found: DATABASE_URL` prerendering `/`. A build
+ * step must never depend on a running production database (the DB may not
+ * even have this schema applied yet — `docker/entrypoint.sh` runs
+ * `prisma migrate deploy` at *container start*, after the image is
+ * already built). Forcing this dynamic doesn't lose the caching story —
+ * `unstable_cache()`'s Data Cache entries and `revalidateTag()` both work
+ * identically on a dynamically-rendered route; only the outer page shell
+ * renders per-request instead of being reused as static output, which is
+ * cheap next to the actual DB reads it wraps.
+ */
+export const dynamic = "force-dynamic";
+
 async function FeaturedStatsBand() {
   const results = await Promise.all(
     featuredEntries.map(async (entry) => {

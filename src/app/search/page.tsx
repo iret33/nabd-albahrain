@@ -10,6 +10,12 @@ interface Props {
   searchParams: Promise<{ q?: string; page?: string }>;
 }
 
+// Phase 8: explicit alongside the other DB-backed pages (see
+// `src/app/(home)/page.tsx`) for certainty — the `searchParams` prop
+// already opts this route out of static rendering on its own, but making
+// it explicit removes any doubt.
+export const dynamic = "force-dynamic";
+
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const q = (await searchParams).q?.trim() ?? "";
   return q

@@ -8,6 +8,11 @@ export const metadata: Metadata = {
   description: "تصفح كل فئات مجموعات البيانات المفتوحة في مملكة البحرين حسب الموضوع.",
 };
 
+// Phase 8 fix: without this, `next build` tries to statically prerender
+// this DB-backed route at *build* time, which requires a live DATABASE_URL
+// — broke the Docker build. See the longer explanation on `src/app/(home)/page.tsx`.
+export const dynamic = "force-dynamic";
+
 export default async function CategoriesPage() {
   const themes = await getThemeCounts();
 
