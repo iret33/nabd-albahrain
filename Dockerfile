@@ -4,6 +4,12 @@
 # `output: "standalone"` server. See docker-compose.yml for how this image
 # is run (an "app" service alongside a "db" Postgres service).
 #
+# What the image contains (see docker/entrypoint.sh for how it is started):
+#   - the Next.js standalone server (`server.js`)
+#   - the bundled sync CLI (`dist/sync-cli.cjs`, built by `pnpm build:cli`), so
+#     `docker compose run --rm app sync -- --dataset <id>` works in production
+#   - the `prisma` CLI + migrations, applied by the entrypoint before start
+#
 # Prisma + pnpm + Next standalone note: Next's file-tracer does not
 # reliably pick up Prisma's native query-engine binary (it's resolved
 # dynamically at runtime, not via a static `require()` it can see), and
@@ -17,13 +23,24 @@
 # run `migrate deploy` before the server starts) are all present and built
 # for the right platform, at the cost of a larger image than a purely
 # traced one — a deliberate, standard trade-off for Prisma in Docker.
+#
+# That overlay includes devDependencies, and they cannot simply be pruned
+# (`pnpm prune --prod`): `prisma` itself is a devDependency, and the CLI plus
+# esbuild (for the bundle) are needed at build/start time. It is mitigated
+# instead by making the whole application tree read-only for the runtime user
+# (only `.next/cache` is writable), so code execution inside the server cannot
+# rewrite the application or its dependencies.
 
 FROM node:22-alpine AS base
 # openssl: required by Prisma's query engine on Alpine/musl.
 # libc6-compat: some native deps (sharp-style prebuilt binaries) expect it.
 RUN apk add --no-cache openssl libc6-compat
-RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
+# Pin pnpm to the exact version in package.json's "packageManager" field (the
+# same one CI and local development use) instead of floating on `latest`:
+# `corepack prepare --activate` with no argument reads that field.
+COPY package.json ./
+RUN corepack enable && corepack prepare --activate
 
 # ---------------------------------------------------------------------------
 # deps: install dependencies (this is what `prisma generate`'s own
@@ -43,8 +60,18 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* values are inlined by `next build`, so the public site URL
+# (canonical links, sitemap, robots) must be known HERE, not just at runtime.
+# docker-compose.yml passes it from .env; the default is the documented domain.
+ARG NEXT_PUBLIC_SITE_URL=https://data.hekkapp.com
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+# The app has no static assets today and git cannot track an empty directory,
+# so a fresh clone has no public/ — which would make the runner's COPY fail.
+RUN mkdir -p public
 RUN pnpm exec prisma generate
 RUN pnpm build
+# Bundle the sync CLI (src/lib/sync/cli.ts -> dist/sync-cli.cjs).
+RUN pnpm build:cli
 
 # ---------------------------------------------------------------------------
 # runner: minimal runtime image.
@@ -56,6 +83,8 @@ WORKDIR /app
 
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
+# Everything below is copied as root and stays root-owned: the runtime user
+# can read and execute it but not modify it.
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
@@ -64,13 +93,23 @@ COPY --from=builder /app/.next/static ./.next/static
 # standalone output above.
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/dist ./dist
 COPY docker/entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh && chown -R nextjs:nodejs /app
+# The one place the server writes at runtime is Next's data/fetch cache.
+RUN chmod 0555 ./entrypoint.sh \
+    && mkdir -p .next/cache \
+    && chown -R nextjs:nodejs .next/cache
 
 USER nextjs
 
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+
+# Liveness only (/api/health deliberately does not touch Postgres). Gives plain
+# `docker run` the same signal docker-compose.yml's healthcheck gives compose.
+# --start-period covers the entrypoint's `prisma migrate deploy`.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+    CMD wget --quiet --tries=1 --spider "http://127.0.0.1:${PORT:-3000}/api/health" || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]

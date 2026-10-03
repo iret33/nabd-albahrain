@@ -1,29 +1,75 @@
 # Production Compose file for نبض البحرين (Nabd Al-Bahrain).
 #
-# Local dev: this file is also the dev-DB bootstrap — run just the `db`
-# service (`docker compose up -d db`) and point `pnpm dev` at it directly;
-# see the README's "Local development" section. Don't run `app` locally via
-# Docker for day-to-day dev — `pnpm dev` gives hot reload, this doesn't.
-#
 # Production bring-up: `docker compose up -d --build` starts both services.
-# No port is published to the outside world except `app` on
-# 127.0.0.1:3000 — the existing Cloudflare Tunnel on the host is what
-# actually exposes it publicly (see the README's "Production deployment"
-# section). `db` is likewise bound to 127.0.0.1 only, for local
-# inspection/backup access from the host — never reachable from outside it.
+# The only port published is `app` on 127.0.0.1:3000 — the Cloudflare Tunnel
+# on the host is what exposes it publicly (see the README's "Production
+# deployment" section). The `db` service publishes NOTHING: the app reaches it
+# over the compose network, and nothing on the host needs it in production.
+#
+# Local development: `pnpm dev` runs on the host and needs Postgres on
+# 127.0.0.1:5432. Copy docker-compose.override.example.yml to
+# docker-compose.override.yml (git-ignored; compose merges it automatically)
+# to publish the database to loopback, then `docker compose up -d db`.
+# Don't run `app` locally via Docker for day-to-day dev — `pnpm dev` gives
+# hot reload, this doesn't.
+#
+# One-off sync from the app image (no web server, same DB lock as the server):
+#   docker compose run --rm app sync -- --dataset <id> --force
+#
+# Configuration lives in `.env` (copy .env.example). Besides what the app
+# reads from it via `env_file`, Compose itself reads these from the same file:
+#   POSTGRES_PASSWORD        password for the bundled Postgres (default `nabd`,
+#                            which matches databases created by older versions
+#                            of this file; for a NEW database set a random hex
+#                            value BEFORE the first `up` — the password is baked
+#                            into the data volume at first start, and changing
+#                            it later needs ALTER USER inside the database).
+#                            Use hex (`openssl rand -hex 16`): it goes into a URL.
+#   NEXT_PUBLIC_SITE_URL     public origin; baked into the build (canonical
+#                            links, sitemap) AND passed at runtime.
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* is inlined at build time, so it must be a build arg.
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://data.hekkapp.com}
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # The in-compose database, derived from the single POSTGRES_PASSWORD knob
+      # (overrides any DATABASE_URL in .env, which is for non-Docker use).
+      - DATABASE_URL=postgresql://nabd:${POSTGRES_PASSWORD:-nabd}@db:5432/nabd
+      - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://data.hekkapp.com}
+      # Tunables the app reads at runtime. Listed bare so they are passed through
+      # from .env / the shell when set, and left UNSET (app defaults apply) when
+      # not — an explicit empty string would override those defaults.
+      # `env_file` above already supplies them from .env; this list documents them.
+      - AUTO_SYNC_INTERVAL_MINUTES
+      - CACHE_TTL_SECONDS
+      - PUBLIC_REFRESH_ENABLED
+      - PUBLIC_REFRESH_CATALOG_COOLDOWN_SECONDS
+      - PUBLIC_REFRESH_DATASET_COOLDOWN_SECONDS
+      - PUBLIC_REFRESH_MAX_RECORDS
+      - SYNC_CONCURRENCY
+      # 1 when running behind the Cloudflare Tunnel / a reverse proxy: per-client
+      # rate limits (login, sync API, public refresh) then key on the real IP.
+      # With 0 every visitor shares one bucket.
+      - TRUST_PROXY
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       db:
         condition: service_healthy
+    # Hardening. The process runs as the unprivileged `nextjs` user (see the
+    # Dockerfile) and needs no Linux capabilities: it binds a high port and
+    # writes only to .next/cache.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 10s
@@ -36,10 +82,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: nabd
-      POSTGRES_PASSWORD: nabd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nabd}
       POSTGRES_DB: nabd
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
