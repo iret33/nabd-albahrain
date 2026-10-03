@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import type { Metadata } from "next";
 import {
   getDatasetById,
@@ -14,6 +15,7 @@ import type { CatalogField } from "@/lib/sync/schemas";
 import { themeColor } from "@/lib/theme-colors";
 import { altTitle, displayTitle, formatDateTimeAr, stripHtml } from "@/lib/format";
 import { slugify } from "@/lib/slugify";
+import { clientKey } from "@/lib/rate-limit";
 import { SITE_URL } from "@/lib/site";
 import { buildBreadcrumbJsonLd, buildDatasetJsonLd, jsonLdScript, truncateOnWord } from "@/lib/jsonld";
 import {
@@ -129,6 +131,7 @@ async function RecordsSection({
       dir: view.dir,
       rq: view.rq,
       total,
+      client: clientKey(await headers()),
     });
     return <RecordsTable datasetId={datasetId} title={title} fields={fields} stats={stats} page={recordsPage} />;
   } catch (err) {

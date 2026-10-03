@@ -22,6 +22,7 @@ function page(over: Partial<RecordsPage> = {}): RecordsPage {
     rq: null,
     sortFailed: false,
     searchFailed: false,
+    throttled: false,
     ...over,
   };
 }

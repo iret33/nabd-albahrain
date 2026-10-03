@@ -77,7 +77,7 @@ describe("R5-06: no form control triggers iOS focus zoom", () => {
         title: "T",
         fields: [{ name: "a", label: "A", type: "text" }],
         stats: null,
-        page: { rows: [{ id: "1", data: { a: "x" } }], total: 1000, page: 3, pageSize: 25, totalPages: 40, sortField: null, sortDir: "asc", rq: null, sortFailed: false, searchFailed: false },
+        page: { rows: [{ id: "1", data: { a: "x" } }], total: 1000, page: 3, pageSize: 25, totalPages: 40, sortField: null, sortDir: "asc", rq: null, sortFailed: false, searchFailed: false, throttled: false },
       }),
     );
     expectNoFocusZoom(html, 2);

@@ -171,7 +171,9 @@ export function RecordsTable({
 
       {recordsPage.searchFailed ? (
         <p role="status" className="mt-4 rounded-xl border border-coral/40 bg-coral/5 px-4 py-3 text-sm leading-7 text-ink/80">
-          تعذّر إكمال البحث الآن (استغرق وقتًا أطول من المسموح). جرّب كلمة أدق أو{" "}
+          {recordsPage.throttled
+            ? "طلبات البحث والفرز كثيرة الآن فلم يُنفَّذ طلبك. انتظر لحظات ثم أعد المحاولة، أو "
+            : "تعذّر إكمال البحث الآن (استغرق وقتًا أطول من المسموح). جرّب كلمة أدق أو "}{" "}
           <Link href={clearHref} rel="nofollow" className="font-medium text-coral underline underline-offset-4">
             امسح البحث
           </Link>
@@ -207,7 +209,10 @@ export function RecordsTable({
                 من أصل <CountNoun n={recordsPage.total} forms={NOUNS.record} oblique />
               </>
             )}
-            {recordsPage.sortFailed && " — تعذّر الفرز فعُرضت السجلات بترتيبها الأصلي"}
+            {recordsPage.sortFailed &&
+              (recordsPage.throttled
+                ? " — الفرز مشغول الآن فعُرضت السجلات بترتيبها الأصلي، أعد المحاولة بعد لحظات"
+                : " — تعذّر الفرز فعُرضت السجلات بترتيبها الأصلي")}
             {/* Phones: the table is wider than the screen and nothing else says so (the edge shadows only show once it moves). */}
             <span aria-hidden="true" className="block sm:hidden print:hidden">
               ↔ مرّر الجدول أفقيًا لعرض باقي الأعمدة

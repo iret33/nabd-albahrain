@@ -6,7 +6,7 @@
  */
 
 import { first, parsePage, parseQuery } from "@/lib/params";
-import { MAX_RECORDS_QUERY_LENGTH } from "@/lib/records-query";
+import { MAX_RECORDS_PAGE, MAX_RECORDS_QUERY_LENGTH } from "@/lib/records-query";
 
 // ---------------------------------------------------------------------------
 // Records table URL state
@@ -38,7 +38,7 @@ export function parseRecordsParams(raw: Record<string, RawParam> | null | undefi
   const dirRaw = first(sp.dir);
   const rq = parseQuery(sp.rq, MAX_RECORDS_QUERY_LENGTH);
   return {
-    page: parsePage(sp.page),
+    page: parsePage(sp.page, MAX_RECORDS_PAGE),
     sort: sort !== "" && sort.length <= MAX_SORT_PARAM ? sort : null,
     dir: dirRaw === "asc" || dirRaw === "desc" ? dirRaw : null,
     rq: rq !== "" ? rq : null,
