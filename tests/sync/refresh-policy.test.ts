@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedOrigin, parseRefreshBody } from "@/lib/sync/refresh-policy";
+import { isAllowedOrigin, isPublicDatasetId, parseRefreshBody } from "@/lib/sync/refresh-policy";
 import { cooldownUntil, isStale } from "@/lib/sync/freshness";
 import { readTextCapped } from "@/lib/sync/body";
 
@@ -29,6 +29,29 @@ describe("parseRefreshBody", () => {
     ]) {
       expect(parseRefreshBody(bad).ok, bad.slice(0, 40)).toBe(false);
     }
+  });
+});
+
+describe("dataset ids from the outside world (public-endpoints-500-on-nul-dataset-id)", () => {
+  const body = (id: string) => JSON.stringify({ scope: "dataset", id });
+
+  it("isPublicDatasetId rejects NUL, control characters, lone surrogates and over-long ids, and accepts real ones", () => {
+    for (const bad of ["a\u0000b", "\u0000", "a\nb", "a\u007fb", "a\ud800b", "\udc00x", "x\ud83d", "x".repeat(201), "", 7, null, undefined]) {
+      expect(isPublicDatasetId(bad), JSON.stringify(bad)).toBe(false);
+    }
+    for (const good of ["seaports", "population-by-nationality", "x".repeat(200), "dataset_1.v2", "السكان", "emoji-😀-ok"]) {
+      expect(isPublicDatasetId(good), good).toBe(true);
+    }
+  });
+
+  it("the refresh body refuses a malformed id as a parse failure (a 400, before any rate-limit slot is used)", () => {
+    expect(parseRefreshBody(body("seaports")).ok).toBe(true);
+    for (const bad of ["a\u0000b", "a\ud800b", "a\nb", "x".repeat(201)]) {
+      expect(parseRefreshBody(body(bad)).ok, JSON.stringify(bad)).toBe(false);
+    }
+    // the catalog shape is untouched by the id refine
+    expect(parseRefreshBody('{"scope":"catalog"}')).toEqual({ ok: true, body: { scope: "catalog" } });
+    expect(parseRefreshBody('{"scope":"catalog","id":"x"}').ok).toBe(false);
   });
 });
 

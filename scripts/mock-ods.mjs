@@ -19,6 +19,8 @@
 //   POST /__mock/mutate?id=<id>&mode=<mode>[&ms=&times=&fraction=]   per-dataset modes:
 //          bump         append a period of rows; advance modified, data_processed and records_count
 //          bump-meta    advance modified + metadata_processed only (rows unchanged)
+//          set-modified set `modified` to the raw string in &value= (e.g. a far-future date)
+//          set-title    set the title to &value= (a metadata-only change: the version token is unchanged)
 //          empty        export answers [] while the catalog still claims the old records_count
 //          truncate     export answers only `fraction` (default 0.3) of the rows, catalog count unchanged
 //          slow         export sends headers + "[" then stalls `ms` (default 3000) before the rest
@@ -156,11 +158,15 @@ export async function startMockOds({ port = 0, host = "127.0.0.1", big = false }
   const datasets = new Map();
   const flags = { catalog: null, catalogShort: 3, single404: false };
   const hits = { catalog: 0, catalogEntry: 0, export: 0, total: 0, exportById: {} };
+  // Exports being served right now / the most at once since the last reset (tests that
+  // assert big datasets are downloaded one at a time).
+  const exportsInFlight = { now: 0, max: 0 };
 
   const state = {
     datasets,
     flags,
     hits,
+    exportsInFlight,
     reset() {
       datasets.clear();
       seedFixtures(datasets);
@@ -170,6 +176,7 @@ export async function startMockOds({ port = 0, host = "127.0.0.1", big = false }
       flags.single404 = false;
       hits.catalog = hits.catalogEntry = hits.export = hits.total = 0;
       hits.exportById = {};
+      exportsInFlight.now = exportsInFlight.max = 0;
     },
     /** Apply one mutation mode (what POST /__mock/mutate does). Returns a small result object. */
     mutate(id, mode, params = {}) {
@@ -189,6 +196,13 @@ export async function startMockOds({ port = 0, host = "127.0.0.1", big = false }
           d.metas.default.modified = now();
           d.metas.default.metadata_processed = d.metas.default.modified;
           return { ok: true, modified: d.metas.default.modified };
+        case "set-modified":
+          // A raw `modified` string, e.g. value=9999-12-31T23:59:59Z (a portal serving a bad date).
+          d.metas.default.modified = String(params.value ?? "");
+          return { ok: true, modified: d.metas.default.modified };
+        case "set-title":
+          d.metas.default.title = String(params.value ?? "");
+          return { ok: true, title: d.metas.default.title };
         case "empty": d.mode.empty = true; return { ok: true };
         case "truncate": d.mode.truncate = Number(params.fraction) || 0.3; return { ok: true };
         case "slow": d.mode.slowMs = Number(params.ms) || 3000; return { ok: true };
@@ -245,6 +259,11 @@ export async function startMockOds({ port = 0, host = "127.0.0.1", big = false }
       hits.exportById[id] = (hits.exportById[id] || 0) + 1;
       const d = datasets.get(id);
       if (!d) return json(res, 404, { error: "not found" });
+      exportsInFlight.now++;
+      exportsInFlight.max = Math.max(exportsInFlight.max, exportsInFlight.now);
+      res.once("close", () => {
+        exportsInFlight.now--;
+      });
       if (d.mode.http429 > 0) {
         d.mode.http429--;
         return json(res, 429, { error: "slow down" }, { "retry-after": "1" });

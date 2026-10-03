@@ -168,6 +168,13 @@ export interface CatalogEntryResult {
   via: "entry" | "catalog";
   /** Set when `entry` is null although the id was listed (the entry was malformed). */
   malformedIssue?: string;
+  /**
+   * How many distinct ids the verified-complete catalog listed (malformed
+   * entries included, as on the catalog-wide path). Only set when the answer
+   * came from the full catalog (`via === "catalog"`); the engine needs it to
+   * refuse a removal that an implausibly small catalog would imply.
+   */
+  catalogSeenCount?: number;
 }
 
 /**
@@ -204,10 +211,11 @@ export async function fetchCatalogEntry(
   }
 
   const catalog = await fetchFullCatalog({ signal: opts.signal });
+  const catalogSeenCount = catalog.seenIds.size;
   const entry = catalog.datasets.find((d) => d.dataset_id === datasetId) ?? null;
-  if (entry) return { entry, via: "catalog" };
+  if (entry) return { entry, via: "catalog", catalogSeenCount };
   const malformed = catalog.skipped.find((s) => s.datasetId === datasetId);
-  return { entry: null, via: "catalog", malformedIssue: malformed?.issue };
+  return { entry: null, via: "catalog", malformedIssue: malformed?.issue, catalogSeenCount };
 }
 
 /**

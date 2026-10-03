@@ -17,16 +17,19 @@
  */
 
 import { SyncAbortedError, describeError } from "./errors";
+import { clearFreshnessMemo } from "./freshness";
 import {
   abortOrphanedRuns,
   createRunLog,
   finalizeRunLog,
+  maybePruneSyncLogs,
   updateRunProgress,
   updateSyncState,
   type ChangedSets,
   type RunCounters,
   type RunFailure,
   type RunStatus,
+  type SyncStatePatch,
 } from "./log";
 import { acquireLock, type SyncLockHandle } from "./lock";
 import { notifyAppToRevalidate } from "./notify";
@@ -79,6 +82,9 @@ export async function beginRun(input: {
       resolveDone = resolve;
     });
     const unregister = registerActiveRun({ logId, abort: (reason) => abortWith(reason), done });
+    // The lock and the "running" row exist now: a freshness snapshot cached a
+    // moment ago still says "idle" and would make a poller miss the run.
+    clearFreshnessMemo();
 
     return {
       trigger: input.trigger,
@@ -103,7 +109,7 @@ export interface RunOutcome {
   failures: RunFailure[];
   changed: ChangedSets;
   /** SyncState columns to bump. */
-  statePatch: { lastCatalogCheckAt?: Date; lastSuccessAt?: Date; lastDataChangeAt?: Date };
+  statePatch: SyncStatePatch;
   /** Dataset ids whose cached pages must be dropped. */
   notifyIds: string[];
 }
@@ -128,8 +134,14 @@ export async function endRun(ctx: RunContext, outcome: RunOutcome): Promise<void
     } catch (err) {
       console.error("[sync] Cache invalidation request failed:", err);
     }
+    // Retention runs after every kind of run (the CLI and external-cron
+    // deployments never start the in-process scheduler); throttled to hourly
+    // and never throwing.
+    await maybePruneSyncLogs();
   } finally {
     await ctx.lock.release();
+    // After the release: a snapshot read between the two would still say "running".
+    clearFreshnessMemo();
     ctx.unregister();
     ctx.resolveDone();
   }

@@ -13,6 +13,8 @@
  * touching `process.env`.
  */
 
+import { SWITCH_ACCEPTED_TEXT, parseSwitch } from "@/lib/env";
+
 type Env = Record<string, string | undefined>;
 
 const warned = new Set<string>();
@@ -127,7 +129,13 @@ export function getStaleAfterMs(env: Env = process.env): number {
 // ---------------------------------------------------------------------------
 
 export interface PublicRefreshConfig {
-  /** PUBLIC_REFRESH_ENABLED=0 is the kill switch. */
+  /**
+   * PUBLIC_REFRESH_ENABLED is the kill switch: 0/false/no/off turns the public
+   * refresh off, 1/true/yes/on (or unset/blank) leaves it on, and anything
+   * else FAILS CLOSED (off, with a warning) because an operator reaching for
+   * the switch under abuse must not end up with the endpoint still open. In
+   * production the boot validator rejects an unrecognised value outright.
+   */
   enabled: boolean;
   catalogCooldownSeconds: number;
   datasetCooldownSeconds: number;
@@ -137,9 +145,23 @@ export interface PublicRefreshConfig {
   maxDatasets: number;
 }
 
+/** The kill switch: see PublicRefreshConfig.enabled. */
+function publicRefreshEnabled(env: Env): boolean {
+  const value = parseSwitch(env.PUBLIC_REFRESH_ENABLED);
+  if (value === "invalid") {
+    warnOnce(
+      "PUBLIC_REFRESH_ENABLED",
+      `PUBLIC_REFRESH_ENABLED=${JSON.stringify(env.PUBLIC_REFRESH_ENABLED?.trim())} is not recognised ` +
+        `(use ${SWITCH_ACCEPTED_TEXT}); treating it as OFF.`,
+    );
+    return false;
+  }
+  return value !== "off";
+}
+
 export function loadPublicRefreshConfig(env: Env = process.env): PublicRefreshConfig {
   return {
-    enabled: env.PUBLIC_REFRESH_ENABLED?.trim() !== "0",
+    enabled: publicRefreshEnabled(env),
     catalogCooldownSeconds: parseIntEnv(env, "PUBLIC_REFRESH_CATALOG_COOLDOWN_SECONDS", {
       def: 120,
       min: 0,

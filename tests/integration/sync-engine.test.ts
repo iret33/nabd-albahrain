@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RUN_INTEGRATION, setupHarness, waitUntil, type Harness } from "./helpers";
 
 describe.skipIf(!RUN_INTEGRATION)("sync engine (integration: Postgres + in-process mock portal)", () => {
@@ -212,6 +212,57 @@ describe.skipIf(!RUN_INTEGRATION)("sync engine (integration: Postgres + in-proce
       const forced = await h.engine.runSync({ trigger: "test", force: true, datasetId: "shrink-me" });
       expect(forced.status).toBe("success");
       expect(await recordCount("shrink-me")).toBe(90);
+    });
+
+    it("a truncated export of a SMALL dataset is refused too (r1-11: the guard used to be blind below 100 stored rows)", async () => {
+      await h.seed();
+      const before = await h.prisma.dataset.findUniqueOrThrow({ where: { id: "live-births-by-governorate" } });
+      expect(before.sourceCount).toBe(44);
+      await post("/__mock/mutate?id=live-births-by-governorate&mode=bump"); // catalog count 48
+      await post("/__mock/mutate?id=live-births-by-governorate&mode=truncate&fraction=0.3"); // export answers 14 rows
+
+      const r = await h.engine.runSync({ trigger: "test" });
+      expect(r).toMatchObject({ status: "partial", failed: 1, updated: 0 });
+      expect(r.failures).toEqual([
+        {
+          datasetId: "live-births-by-governorate",
+          error: "Export returned 14 rows but the catalog reports 48 (previously stored 44); keeping previous data unless forced",
+        },
+      ]);
+      const after = await h.prisma.dataset.findUniqueOrThrow({ where: { id: "live-births-by-governorate" } });
+      expect(after).toMatchObject({ syncStatus: "error", sourceCount: 44 });
+      expect(after.syncedVersion).toBe(before.syncedVersion);
+      expect(await recordCount("live-births-by-governorate")).toBe(44);
+    });
+
+    it("a refused truncation stays refused on the next PLAIN run (the 'error' state used to switch the guard off)", async () => {
+      await post("/__mock/add-big?id=shrink-me&rows=300");
+      await h.engine.runSync({ trigger: "test" });
+      await post("/__mock/mutate?id=shrink-me&mode=bump");
+      await post("/__mock/mutate?id=shrink-me&mode=truncate&fraction=0.3");
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const r = await h.engine.runSync({ trigger: "test" });
+        expect(r.failures.map((f) => f.datasetId), `attempt ${attempt}`).toEqual(["shrink-me"]);
+        expect(await recordCount("shrink-me"), `attempt ${attempt}`).toBe(300);
+      }
+      // the portal recovers
+      await post("/__mock/mutate?id=shrink-me&mode=restore");
+      const fixed = await h.engine.runSync({ trigger: "test" });
+      expect(fixed.changed.updated).toEqual(["shrink-me"]);
+      expect(await recordCount("shrink-me")).toBeGreaterThan(300);
+    });
+
+    it("a GENUINE shrink (the catalog count drops with the rows) is accepted, large or small", async () => {
+      await post("/__mock/add-big?id=shrinks&rows=300");
+      await post("/__mock/add-big?id=shrinks-small&rows=44");
+      await h.engine.runSync({ trigger: "test" });
+      await post("/__mock/add-big?id=shrinks&rows=100"); // replaced upstream by a 100-row version
+      await post("/__mock/add-big?id=shrinks-small&rows=14");
+      const r = await h.engine.runSync({ trigger: "test" });
+      expect(r.failed).toBe(0);
+      expect(r.changed.updated.sort()).toEqual(["shrinks", "shrinks-small"]);
+      expect(await recordCount("shrinks")).toBe(100);
+      expect(await recordCount("shrinks-small")).toBe(14);
     });
 
     it("never stores raw upstream error text", async () => {
@@ -433,6 +484,36 @@ describe.skipIf(!RUN_INTEGRATION)("sync engine (integration: Postgres + in-proce
       expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } })).removedAt).not.toBeNull();
     });
 
+    it("refuses to flag a dataset removed on the word of an implausibly small catalog (r1-08), live or dry", async () => {
+      await h.seed();
+      await post("/__mock/mutate?mode=catalog-empty");
+      await post("/__mock/mutate?mode=single-404"); // the per-dataset endpoint is unusable too: the engine falls back to the empty catalog
+      const r = await h.engine.runSync({ trigger: "public", datasetId: "housing-loans", maxRecords: 100_000, maxDatasets: 5 });
+      expect(r.status).toBe("failed");
+      expect(r.error).toMatch(/refusing to prune/);
+      expect(r.changed.removed).toEqual([]);
+      expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "housing-loans" } })).removedAt).toBeNull();
+      expect(await h.prisma.dataset.count({ where: { removedAt: { not: null } } })).toBe(0);
+
+      await expect(h.engine.runSync({ trigger: "cli", dryRun: true, datasetId: "housing-loans" })).rejects.toThrow(/refusing to prune/);
+    });
+
+    it("controls: a catalog that lists 9 of 10 still flags the missing one; an empty catalog with a working entry endpoint changes nothing", async () => {
+      await h.seed();
+      await post("/__mock/mutate?mode=catalog-empty");
+      const viaEntry = await h.engine.runSync({ trigger: "public", datasetId: "housing-loans" });
+      expect(viaEntry.status).toBe("success");
+      expect(viaEntry.removed).toBe(0);
+      await post("/__mock/mutate?mode=heal");
+
+      await post("/__mock/mutate?mode=single-404");
+      await post("/__mock/mutate?id=housing-loans&mode=remove");
+      const flagged = await h.engine.runSync({ trigger: "public", datasetId: "housing-loans" });
+      expect(flagged.status).toBe("failed");
+      expect(flagged.error).toBe("Dataset housing-loans is no longer listed in the portal catalog");
+      expect(flagged.changed.removed).toEqual(["housing-loans"]);
+    });
+
     it("an unknown id fails without creating anything", async () => {
       const r = await h.engine.runSync({ trigger: "test", datasetId: "no-such-dataset" });
       expect(r.status).toBe("failed");
@@ -571,6 +652,171 @@ describe.skipIf(!RUN_INTEGRATION)("sync engine (integration: Postgres + in-proce
       const notify = await import("@/lib/sync/notify");
       delete process.env.SYNC_TOKEN;
       expect(await notify.notifyAppToRevalidate({ datasetIds: ["x"] })).toEqual({ ok: false, reason: "no_token" });
+    });
+  });
+
+  /** A stand-in web app that records every invalidation POST body. */
+  async function captureApp() {
+    const bodies: Array<{ tags?: string[]; datasetIds?: string[] }> = [];
+    const app = http.createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      bodies.push(JSON.parse(raw || "{}"));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"revalidated":["datasets"]}');
+    });
+    await new Promise<void>((resolve) => app.listen(0, "127.0.0.1", resolve));
+    process.env.APP_INTERNAL_URL = `http://127.0.0.1:${(app.address() as AddressInfo).port}`;
+    process.env.SYNC_TOKEN = "test-sync-token-0123456789abcdef0123456789";
+    return {
+      bodies,
+      ids: () => [...(bodies.at(-1)?.datasetIds ?? [])].sort(),
+      async stop() {
+        app.closeAllConnections();
+        await new Promise<void>((resolve) => app.close(() => resolve()));
+      },
+    };
+  }
+
+  describe("which datasets the app is told to refresh (r1-05, R2-04)", () => {
+    it("a metadata-only change and a reappeared dataset are notified, without being reported as added or updated", async () => {
+      await h.seed();
+      const app = await captureApp();
+      try {
+        await post("/__mock/mutate?id=housing-loans&mode=set-title&value=Housing%20Loans%20RENAMED");
+        // seaports "disappeared" earlier and is listed again with the SAME version token
+        await h.prisma.dataset.update({ where: { id: "seaports" }, data: { removedAt: new Date() } });
+
+        const r = await h.engine.runSync({ trigger: "test" });
+        expect(r).toMatchObject({ status: "success", added: 0, updated: 0, removed: 0, skipped: 10 });
+        expect(app.ids()).toEqual(["housing-loans", "seaports"]);
+        const log = await h.prisma.syncLog.findUniqueOrThrow({ where: { id: r.syncLogId } });
+        expect(log.changedJson).toEqual({ updated: [], deferred: [], removed: [], added: [] });
+        expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "housing-loans" } })).title).toBe("Housing Loans RENAMED");
+        expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } })).removedAt).toBeNull();
+
+        // nothing changed since: the next pass notifies nobody (no per-run churn of every dataset's cache)
+        await h.engine.runSync({ trigger: "test" });
+        expect(app.ids()).toEqual([]);
+      } finally {
+        await app.stop();
+      }
+    });
+
+    it("a catalog pass that changes nothing does not flush the per-dataset caches of the other 500 datasets", async () => {
+      await h.seed();
+      const app = await captureApp();
+      try {
+        await h.engine.runSync({ trigger: "test" });
+        expect(app.bodies).toHaveLength(1);
+        expect(app.bodies[0].datasetIds).toBeUndefined();
+      } finally {
+        await app.stop();
+      }
+    });
+
+    it("a dataset-scope run always names its dataset, with nothing reported as changed", async () => {
+      await h.seed();
+      const app = await captureApp();
+      try {
+        const r = await h.engine.runSync({ trigger: "public", datasetId: "seaports" });
+        expect(r).toMatchObject({ status: "success", updated: 0, added: 0, skipped: 1 });
+        expect(app.ids()).toEqual(["seaports"]);
+
+        // also when the run fails before it knows anything
+        await post("/__mock/mutate?mode=catalog-500");
+        await post("/__mock/mutate?mode=single-404");
+        const failed = await h.engine.runSync({ trigger: "public", datasetId: "housing-loans" });
+        expect(failed.status).toBe("failed");
+        expect(app.ids()).toEqual(["housing-loans"]);
+      } finally {
+        await app.stop();
+      }
+    });
+  });
+
+  describe("a bad `modified` from the portal cannot pin /updates and the feed (R2-14)", () => {
+    const warnings = () => vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+
+    it("a far-future date is stored as null, logged with the dataset id, and does not make the row churn", async () => {
+      await h.seed();
+      const app = await captureApp();
+      try {
+        await post("/__mock/mutate?id=seaports&mode=set-modified&value=9999-12-31T23:59:59Z");
+        const first = await h.engine.runSync({ trigger: "test" });
+        expect(first.status).toBe("success");
+        expect(first.changed.updated).toEqual(["seaports"]); // the raw token changed, so it re-synced
+        const row = await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } });
+        expect(row.sourceModified).toBeNull();
+        expect(row.syncStatus).toBe("ok");
+        expect(warnings().some((w) => w.includes("seaports") && w.includes("modified"))).toBe(true);
+
+        const before = app.bodies.length;
+        const second = await h.engine.runSync({ trigger: "test" });
+        expect(second).toMatchObject({ updated: 0, skipped: 10 });
+        expect(app.bodies[before].datasetIds).toBeUndefined(); // not rewritten: null stays null
+      } finally {
+        await app.stop();
+      }
+    });
+
+    it("an extended-year string no longer aborts the whole catalog phase", async () => {
+      await h.seed();
+      await post("/__mock/add?id=odd-dates");
+      await post("/__mock/mutate?id=odd-dates&mode=set-modified&value=%2B010000-01-01T00:00:00Z");
+      const r = await h.engine.runSync({ trigger: "test" });
+      expect(r).toMatchObject({ status: "success", added: 1 });
+      expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "odd-dates" } })).sourceModified).toBeNull();
+    });
+
+    it("a normal date within a day of now is kept", async () => {
+      await h.seed();
+      const soon = new Date(Date.now() + 3_600_000).toISOString();
+      await post(`/__mock/mutate?id=seaports&mode=set-modified&value=${encodeURIComponent(soon)}`);
+      await h.engine.runSync({ trigger: "test" });
+      expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } })).sourceModified?.toISOString()).toBe(soon);
+    });
+  });
+
+  describe("big datasets go one at a time (r1-09)", () => {
+    const addBig = (id: string, claim: number) => post(`/__mock/add-big?id=${id}&rows=20&claim=${claim}`);
+
+    it("datasets the portal advertises above 50k rows are never downloaded concurrently; small ones still are", async () => {
+      await h.seed();
+      for (const id of ["big-a", "big-b", "big-c"]) {
+        await addBig(id, 60_000);
+        await post(`/__mock/mutate?id=${id}&mode=slow&ms=250`);
+      }
+      h.mock.state.exportsInFlight.max = 0;
+      const r = await h.engine.runSync({ trigger: "test" });
+      expect(r.status).toBe("success");
+      expect(r.changed.updated.sort()).toEqual(["big-a", "big-b", "big-c"]);
+      expect(h.mock.state.exportsInFlight.max).toBe(1);
+
+      // control: the same shape with SMALL datasets overlaps (so the assertion above can fail)
+      for (const id of ["seaports", "housing-loans", "energy-consumption"]) {
+        await post(`/__mock/mutate?id=${id}&mode=bump`);
+        await post(`/__mock/mutate?id=${id}&mode=slow&ms=250`);
+      }
+      h.mock.state.exportsInFlight.max = 0;
+      await h.engine.runSync({ trigger: "test" });
+      expect(h.mock.state.exportsInFlight.max).toBeGreaterThan(1);
+    });
+
+    it("an abort while a big dataset waits for its turn stops the run cleanly", async () => {
+      await h.seed();
+      for (const id of ["big-a", "big-b"]) {
+        await addBig(id, 60_000);
+        await post(`/__mock/mutate?id=${id}&mode=slow&ms=1500`);
+      }
+      const controller = new AbortController();
+      const run = h.engine.runSync({ trigger: "test", signal: controller.signal });
+      await waitUntil(() => h.mock.state.exportsInFlight.now >= 1, { what: "the first big export to start" });
+      controller.abort(new Error("stop"));
+      const r = await run;
+      expect(r.status).toBe("aborted");
+      expect(await h.lock.getLockState()).toMatchObject({ running: false });
+      expect(h.mock.state.hits.exportById["big-b"] ?? 0).toBeLessThanOrEqual(1);
     });
   });
 });

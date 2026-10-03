@@ -32,7 +32,9 @@ import {
   type ChangedSets,
   type RunCounters,
   type RunFailure,
+  type SyncStatePatch,
 } from "./log";
+import { assertExportIntegrity, assertPlausibleCatalog, isBigDataset } from "./integrity";
 import {
   catalogRecordsCount,
   metadataChanged,
@@ -52,17 +54,12 @@ import {
   type RunContext,
 } from "./run";
 import type { CatalogDataset, CatalogField } from "./schemas";
-import { chunk, mapWithConcurrency } from "./utils";
+import { chunk, createGate, mapWithConcurrency } from "./utils";
 import { computeSourceVersion } from "./version";
 
 const INSERT_BATCH_SIZE = 1000;
 const MAX_ROWS_HARD_CAP = 300_000;
 const MAX_ROWS_STORED_WHEN_CAPPED = 50_000;
-/** A complete catalog smaller than this fraction of the known datasets is not trusted for pruning. */
-const MIN_CATALOG_FRACTION = 0.5;
-/** The shrink guard only protects datasets that were large enough for "half" to mean something. */
-const SHRINK_GUARD_MIN_ROWS = 100;
-const SHRINK_GUARD_RATIO = 0.5;
 
 export interface RunSyncOptions {
   /** Only sync records for the first N datasets (catalog order). */
@@ -218,33 +215,32 @@ function planChanges(
 // ---------------------------------------------------------------------------
 
 /**
- * Refuse to prune from a catalog that is complete but implausibly small
- * (portal serving an error page as an empty catalog, wrong ODS_BASE_URL...).
- */
-function assertPlausibleCatalog(seenCount: number, knownLiveCount: number): void {
-  if (knownLiveCount > 0 && seenCount < knownLiveCount * MIN_CATALOG_FRACTION) {
-    throw new SyncIntegrityError(
-      `The portal catalog lists only ${seenCount} datasets but ${knownLiveCount} are known; ` +
-        `refusing to prune (possible portal problem). Nothing was changed.`,
-    );
-  }
-}
-
-/**
  * Step (b): create new datasets and refresh the metadata of existing ones,
  * touching only rows whose metadata actually changed (and clearing
  * `removedAt` on ids that reappeared). Never touches sync-state columns.
- * Returns the ids that were created.
+ *
+ * Returns the ids that were `created` and the ids of existing rows that were
+ * `rewritten` (a metadata-only change such as a new title, or a reappeared
+ * dataset). The two are kept apart on purpose: `created` is what the run
+ * reports as "new datasets", while `rewritten` only widens the cache
+ * invalidation (the per-dataset caches live 30 minutes and carry the title,
+ * description and licence).
  */
 async function upsertCatalogMetadata(
   entries: CatalogDataset[],
   stored: Map<string, StoredDataset>,
-): Promise<string[]> {
+): Promise<{ created: string[]; rewritten: string[] }> {
   const creates: Array<{ id: string; meta: ReturnType<typeof metadataFromCatalogEntry> }> = [];
   const updates: Array<{ id: string; meta: ReturnType<typeof metadataFromCatalogEntry> }> = [];
 
   for (const entry of entries) {
-    const meta = metadataFromCatalogEntry(entry);
+    const meta = metadataFromCatalogEntry(entry, {
+      onIgnoredModified: (raw) =>
+        console.warn(
+          `[sync] ${entry.dataset_id}: ignoring the portal's modified date ${JSON.stringify(raw.slice(0, 40))} ` +
+            `(not a credible publication date); it will not be used for ordering or freshness.`,
+        ),
+    });
     const existing = stored.get(entry.dataset_id);
     if (!existing) creates.push({ id: entry.dataset_id, meta });
     else if (existing.removedAt !== null || metadataChanged(meta, existing)) {
@@ -286,7 +282,7 @@ async function upsertCatalogMetadata(
     },
   );
 
-  return creates.map((c) => c.id);
+  return { created: creates.map((c) => c.id), rewritten: updates.map((u) => u.id) };
 }
 
 /** Record that these datasets were consulted in a catalog pass (one UPDATE per 5000 ids). */
@@ -323,42 +319,6 @@ type DatasetOutcome =
   | { status: "ok" | "partial" }
   | { status: "error"; error: string }
   | { status: "aborted" };
-
-/**
- * Integrity guards, applied after the export arrived and BEFORE anything is
- * written. Throwing leaves the stored rows, lastSyncedAt and syncedVersion
- * untouched, so the next run retries.
- */
-function assertExportIntegrity(
-  rows: number,
-  freshCount: number,
-  stored: StoredDataset | undefined,
-  force: boolean,
-): void {
-  // The fresh catalog (not our stale previous count) says there should be data.
-  if (rows === 0 && freshCount > 0) {
-    throw new SyncIntegrityError(
-      `Export returned 0 rows but the catalog reports ${freshCount}; keeping previous data`,
-    );
-  }
-  // Truncated export: far fewer rows than BOTH the portal's own count and
-  // what we stored. Comparing with the fresh catalog count means a genuine
-  // upstream shrink (catalog count drops too) is accepted; `partial` rows are
-  // exempt because their stored count is capped; `force` overrides.
-  if (
-    !force &&
-    stored?.syncStatus === "ok" &&
-    stored.sourceCount > SHRINK_GUARD_MIN_ROWS &&
-    freshCount > 0 &&
-    rows < stored.sourceCount * SHRINK_GUARD_RATIO &&
-    rows < freshCount * SHRINK_GUARD_RATIO
-  ) {
-    throw new SyncIntegrityError(
-      `Export returned ${rows} rows but the catalog reports ${freshCount} (previously stored ${stored.sourceCount}); ` +
-        `keeping previous data unless forced`,
-    );
-  }
-}
 
 /** Steps (c)-(f) for one dataset. Never throws — errors are returned as a result. */
 async function syncOneDataset(
@@ -451,6 +411,14 @@ interface RunState {
   changed: ChangedSets;
   /** When a complete catalog pass finished and was applied (null = none did). */
   catalogCheckedAt: Date | null;
+  /**
+   * Dataset ids whose cached pages must be dropped although nothing is
+   * reported as changed for them: rows rewritten for a metadata-only change,
+   * reappeared datasets, and the one dataset a single-dataset run checked
+   * (its "last checked" moved). Kept apart from `changed` because that feeds
+   * the run counters, the SyncLog JSON, the /updates feed and the CLI summary.
+   */
+  notifyExtra: Set<string>;
 }
 
 function newRunState(): RunState {
@@ -459,7 +427,26 @@ function newRunState(): RunState {
     failures: [],
     changed: emptyChangedSets(),
     catalogCheckedAt: null,
+    notifyExtra: new Set(),
   };
+}
+
+/**
+ * Does this run look at the WHOLE catalog without caps? Only such a run may
+ * advance the scheduler's clock (SyncState.lastFullPassAt): a public press
+ * defers the big datasets, so letting it postpone the scheduled pass would
+ * starve exactly the datasets the schedule exists for.
+ */
+export function isUnrestrictedCatalogRun(
+  opts: Pick<RunSyncOptions, "datasetId" | "maxRecords" | "maxDatasets" | "limit" | "dryRun">,
+): boolean {
+  return (
+    !opts.datasetId &&
+    !opts.dryRun &&
+    opts.maxRecords === undefined &&
+    opts.maxDatasets === undefined &&
+    !(opts.limit && opts.limit > 0)
+  );
 }
 
 function recordMalformed(st: RunState, skipped: CatalogSkip[]): void {
@@ -493,6 +480,9 @@ async function catalogPhase(
   const now = new Date();
 
   if (opts.datasetId) {
+    // Whatever happens next (also a failure), this dataset's cached pages are
+    // stale: its "last checked" moves, and a removal/metadata change may land.
+    st.notifyExtra.add(opts.datasetId);
     console.log(`[sync] Fetching catalog entry for ${opts.datasetId}...`);
     const result = await fetchCatalogEntry(opts.datasetId, { signal });
     const stored = await loadStored(opts.datasetId);
@@ -503,14 +493,23 @@ async function catalogPhase(
           `Dataset ${opts.datasetId} has a malformed catalog entry on the portal (${result.malformedIssue})`,
         );
       }
-      // Came from a verified-complete catalog: the portal really no longer lists it.
+      // Came from a complete catalog: the portal does not list it. The same
+      // plausibility guard as the catalog-wide path applies, against the live
+      // count of the WHOLE database (`stored` holds only this one row): a
+      // portal glitch serving an empty or truncated catalog must not let one
+      // anonymous press hide a dataset. Before any write, so dry runs refuse too.
+      if (result.catalogSeenCount !== undefined) {
+        assertPlausibleCatalog(result.catalogSeenCount, await prisma.dataset.count({ where: { removedAt: null } }));
+      }
       if (write) st.changed.removed.push(...(await flagRemoved([opts.datasetId], now)));
       else if (stored.get(opts.datasetId)?.removedAt === null) st.changed.removed.push(opts.datasetId);
       throw new SyncIntegrityError(`Dataset ${opts.datasetId} is no longer listed in the portal catalog`);
     }
 
     if (write) {
-      st.changed.added.push(...(await upsertCatalogMetadata([result.entry], stored)));
+      const { created, rewritten } = await upsertCatalogMetadata([result.entry], stored);
+      st.changed.added.push(...created);
+      for (const id of rewritten) st.notifyExtra.add(id);
       await markChecked([opts.datasetId], now);
     } else if (!stored.has(opts.datasetId)) {
       st.changed.added.push(opts.datasetId);
@@ -536,7 +535,9 @@ async function catalogPhase(
 
   if (write) {
     console.log("[sync] Upserting dataset metadata...");
-    st.changed.added.push(...(await upsertCatalogMetadata(catalog.datasets, stored)));
+    const { created, rewritten } = await upsertCatalogMetadata(catalog.datasets, stored);
+    st.changed.added.push(...created);
+    for (const id of rewritten) st.notifyExtra.add(id);
     st.changed.removed.push(...(await flagRemoved(absent, now)));
     await markChecked(catalog.seenIds, now);
     st.catalogCheckedAt = now;
@@ -569,11 +570,26 @@ async function runPipeline(ctx: RunContext, opts: RunSyncOptions, st: RunState):
   const progress = createProgressWriter(ctx.logId, st.counters);
   await progress.flush();
 
+  // Big datasets go one at a time across the WHOLE step (download, derive and
+  // the pinned-connection transaction), not just around the transaction: a
+  // downloaded 300k-row array that merely waits for a slot would keep its
+  // memory. The wait is abortable and holds no HTTP limiter slot (that lives
+  // inside the fetch). Smallest-first ordering already puts them at the tail.
+  const bigGate = createGate(1);
+  const sync = (entry: CatalogDataset): Promise<DatasetOutcome> => {
+    const run = () => syncOneDataset(entry, stored.get(entry.dataset_id), Boolean(opts.force), signal);
+    if (!isBigDataset(entry)) return run();
+    return bigGate.run(run, signal).catch((err): DatasetOutcome => {
+      if (signal.aborted) return { status: "aborted" };
+      throw err;
+    });
+  };
+
   await mapWithConcurrency(
     plan.download,
     syncConfig.concurrency,
     async (entry) => {
-      const outcome = await syncOneDataset(entry, stored.get(entry.dataset_id), Boolean(opts.force), signal);
+      const outcome = await sync(entry);
       if (outcome.status === "aborted") return outcome;
       st.counters.processed++;
       if (outcome.status === "error") {
@@ -650,9 +666,17 @@ async function executeRun(ctx: RunContext, opts: RunSyncOptions): Promise<RunSyn
   }
 
   const now = new Date();
-  const statePatch: { lastCatalogCheckAt?: Date; lastSuccessAt?: Date; lastDataChangeAt?: Date } = {};
+  const statePatch: SyncStatePatch = {};
   // The moment the catalog pass was applied, not the end of a possibly long run.
-  if (st.catalogCheckedAt) statePatch.lastCatalogCheckAt = st.catalogCheckedAt;
+  if (st.catalogCheckedAt) {
+    statePatch.lastCatalogCheckAt = st.catalogCheckedAt;
+    // The scheduler's due-clock moves only for an UNRESTRICTED pass, and (like
+    // lastCatalogCheckAt) as soon as the catalog was applied, whatever happened
+    // to individual datasets afterwards: a permanently failing dataset makes
+    // every run "partial", and holding the clock back for it would make the
+    // scheduler refetch the whole catalog on every wake.
+    if (isUnrestrictedCatalogRun(opts)) statePatch.lastFullPassAt = st.catalogCheckedAt;
+  }
   // A single-dataset run says nothing about the health of the catalog-wide
   // schedule, so it must not mask a failing scheduler in the `stale` signal.
   if ((status === "success" || status === "partial") && !opts.datasetId) statePatch.lastSuccessAt = now;
@@ -671,7 +695,9 @@ async function executeRun(ctx: RunContext, opts: RunSyncOptions): Promise<RunSyn
     failures: st.failures,
     changed: st.changed,
     statePatch,
-    notifyIds: [...st.changed.updated, ...st.changed.added, ...st.changed.removed],
+    notifyIds: [
+      ...new Set([...st.changed.updated, ...st.changed.added, ...st.changed.removed, ...st.notifyExtra]),
+    ],
   });
 
   return toResult(st, status, error, ctx.logId);

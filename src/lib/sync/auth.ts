@@ -20,7 +20,11 @@
  * a proxy with TRUST_PROXY=1) and, once a client has burned its budget, are
  * answered with 429 instead of 401 until the window resets. A valid admin
  * session is never throttled (its MAC cannot be brute-forced, and it keeps the
- * dashboard usable while someone else is hammering the endpoint).
+ * dashboard usable while someone else is hammering the endpoint), and neither
+ * is a CORRECT Bearer SYNC_TOKEN (a 256-bit secret: only wrong guesses need
+ * throttling). The admin LOGIN form is different on purpose: ADMIN_TOKEN is
+ * typed into an internet-facing form, so there even the right token is refused
+ * while locked out (see `src/lib/admin/login.ts`).
  *
  * IMPORTANT: every function that decides access is async. Callers MUST `await`
  * them — `if (!isSyncRequestAuthorized(req))` on an un-awaited Promise is always
@@ -37,6 +41,7 @@ import {
   sessionSecretFromEnv,
   verifySession,
 } from "@/lib/admin-session";
+import { trustProxyEnabled } from "@/lib/env";
 import { clientKey, peekRateLimit, rateLimit } from "@/lib/rate-limit";
 
 // Re-exported for existing importers; the constant itself lives in a
@@ -82,7 +87,7 @@ export function isSameOriginRequest(
     return false;
   }
   const hosts = [headers.get("host")];
-  if (env.TRUST_PROXY === "1") hosts.push(headers.get("x-forwarded-host")?.split(",")[0]?.trim() ?? null);
+  if (trustProxyEnabled(env)) hosts.push(headers.get("x-forwarded-host")?.split(",")[0]?.trim() ?? null);
   return hosts.some((h) => !!h && h.toLowerCase() === originHost.toLowerCase());
 }
 
@@ -113,14 +118,22 @@ export async function authorizeSyncRequest(
     }
   }
 
-  // 2) Bearer token, behind the per-client failure throttle.
+  // 2) Bearer token. A MATCH passes before the failure throttle is consulted:
+  // SYNC_TOKEN is a 256-bit random secret in production (boot refuses anything
+  // weaker), so a correct guess cannot be brute-forced and there is nothing to
+  // protect by refusing it. Gating first let anonymous junk requests (ten from
+  // one client, or from everyone while the client key is shared) lock out the
+  // app's OWN cache-invalidation call and the owner's cron. Only wrong guesses
+  // are gated and counted. The comparison is always made, even without a
+  // configured token or a presented one, so timing does not reveal either.
+  const syncToken = env.SYNC_TOKEN;
+  const presented = parseBearer(req.headers.get("authorization"));
+  const equal = safeEqual(presented ?? "", syncToken ?? "");
+  if (equal && syncToken && presented) return { ok: true, via: "bearer" };
+
   const limiterKey = `sync-api:${clientKey(req.headers)}`;
   const gate = peekRateLimit(limiterKey, SYNC_API_FAILURE_LIMIT);
   if (!gate.ok) return { ok: false, status: 429, retryAfterSeconds: gate.retryAfterSeconds };
-
-  const syncToken = env.SYNC_TOKEN;
-  const presented = parseBearer(req.headers.get("authorization"));
-  if (syncToken && presented && safeEqual(presented, syncToken)) return { ok: true, via: "bearer" };
 
   rateLimit(limiterKey, SYNC_API_FAILURE_LIMIT);
   return { ok: false, status: 401 };

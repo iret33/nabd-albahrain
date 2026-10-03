@@ -55,6 +55,39 @@ function present(value: string | undefined): value is string {
   return value !== undefined && value.trim() !== "";
 }
 
+/**
+ * On/off environment switches (PUBLIC_REFRESH_ENABLED): the spellings an
+ * operator under pressure actually types. One parser for the boot validator
+ * and the runtime loader, so the two cannot drift (the validator used to run a
+ * NUMBER check on it, which crash-looped the container on `false` while the
+ * loader silently ignored everything but `0`).
+ */
+export const SWITCH_ON_VALUES = ["1", "true", "yes", "on"] as const;
+export const SWITCH_OFF_VALUES = ["0", "false", "no", "off"] as const;
+export const SWITCH_ACCEPTED_TEXT = `${SWITCH_OFF_VALUES.join("/")} (off) or ${SWITCH_ON_VALUES.join("/")} (on)`;
+
+export type SwitchValue = "on" | "off" | "unset" | "invalid";
+
+/** Blank/unset is "unset" (the caller's default); anything outside the two lists is "invalid" (callers fail closed). */
+export function parseSwitch(raw: string | undefined): SwitchValue {
+  if (!present(raw)) return "unset";
+  const v = raw.trim().toLowerCase();
+  if ((SWITCH_ON_VALUES as readonly string[]).includes(v)) return "on";
+  if ((SWITCH_OFF_VALUES as readonly string[]).includes(v)) return "off";
+  return "invalid";
+}
+
+/**
+ * Forwarding headers are believed only when TRUST_PROXY is exactly `1`
+ * (surrounding whitespace ignored, like every other variable here). Nothing
+ * else counts: `true`/`yes` are rejected at boot instead of being coerced,
+ * because silently trusting spoofable headers for a loosely typed value would
+ * be the worse failure.
+ */
+export function trustProxyEnabled(env: EnvLike = process.env): boolean {
+  return env.TRUST_PROXY?.trim() === "1";
+}
+
 /** A non-negative finite number when set; `Number("abc")`/`Infinity` would otherwise silently become NaN/Infinity downstream. */
 function checkNonNegativeNumber(env: EnvLike, name: string, problems: string[]): void {
   const raw = env[name];
@@ -100,7 +133,6 @@ export function validateProductionEnv(env: EnvLike = process.env): string[] {
   for (const name of [
     "AUTO_SYNC_INTERVAL_MINUTES",
     "CACHE_TTL_SECONDS",
-    "PUBLIC_REFRESH_ENABLED",
     "PUBLIC_REFRESH_CATALOG_COOLDOWN_SECONDS",
     "PUBLIC_REFRESH_DATASET_COOLDOWN_SECONDS",
     "PUBLIC_REFRESH_MAX_RECORDS",
@@ -108,7 +140,68 @@ export function validateProductionEnv(env: EnvLike = process.env): string[] {
     checkNonNegativeNumber(env, name, problems);
   }
 
+  if (parseSwitch(env.PUBLIC_REFRESH_ENABLED) === "invalid") {
+    problems.push(`PUBLIC_REFRESH_ENABLED must be ${SWITCH_ACCEPTED_TEXT} when set`);
+  }
+
+  // Anything but 0/1 would be read as 0 (every visitor in ONE rate-limit
+  // bucket, so a few requests lock the refresh button and the admin login for
+  // everybody). Rejected rather than coerced: see trustProxyEnabled().
+  if (present(env.TRUST_PROXY) && !["0", "1"].includes(env.TRUST_PROXY.trim())) {
+    problems.push("TRUST_PROXY must be 0 or 1 when set (1 behind the Cloudflare Tunnel, 0 when the app is exposed directly)");
+  }
+
   return problems;
+}
+
+/**
+ * Non-fatal findings about a production environment, printed loudly at boot.
+ * Not part of `validateProductionEnv`: a hard failure would break `docker
+ * compose up` without a proxy and the one-off `docker compose run app sync`
+ * containers, which share the entrypoint's environment check. Returns [] outside production.
+ */
+export function productionEnvWarnings(env: EnvLike = process.env): string[] {
+  if (env.NODE_ENV !== "production") return [];
+  const warnings: string[] = [];
+  if (!present(env.TRUST_PROXY)) {
+    warnings.push(
+      "TRUST_PROXY is not set, so it is read as 0: every visitor shares ONE rate-limit bucket and a handful of requests " +
+        "can lock out the public refresh button and the admin login for everyone. Set TRUST_PROXY=1 behind the " +
+        "Cloudflare Tunnel (the supported setup), or TRUST_PROXY=0 explicitly when the app is exposed directly.",
+    );
+  }
+  return warnings;
+}
+
+/**
+ * Warn when the database pool is too small for the sync engine plus the web
+ * app: each dataset being synced pins one connection for its whole
+ * transaction, and a page or /api/freshness probe needs a few more. Prisma's
+ * default pool is 2 x CPUs + 1 (3 on a 1-vCPU VPS). `cpus` is passed in so
+ * this stays import-free and testable. Returns null when the pool is fine.
+ */
+export function poolSizingWarning(env: EnvLike = process.env, cpus = 1): string | null {
+  const concurrencyRaw = Number(env.SYNC_CONCURRENCY);
+  const concurrency = Number.isInteger(concurrencyRaw) && concurrencyRaw >= 1 && concurrencyRaw <= 10 ? concurrencyRaw : 3;
+
+  let explicit: number | null = null;
+  if (present(env.DATABASE_URL)) {
+    try {
+      const raw = new URL(env.DATABASE_URL.trim()).searchParams.get("connection_limit");
+      const n = raw === null ? NaN : Number(raw);
+      if (Number.isInteger(n) && n > 0) explicit = n;
+    } catch {
+      // An unparseable URL is reported by validateProductionEnv's scheme check; nothing to add here.
+    }
+  }
+  const pool = explicit ?? Math.max(1, Math.floor(cpus)) * 2 + 1;
+  const needed = concurrency + 6;
+  if (pool >= needed) return null;
+  return (
+    `The database pool is ${pool} connection(s) (${explicit ? "connection_limit in DATABASE_URL" : "Prisma's default of 2 x CPUs + 1"}) ` +
+    `but SYNC_CONCURRENCY=${concurrency} needs about ${needed} (one per dataset being written, plus the web app): ` +
+    `a big sync can then starve page loads. Add ?connection_limit=${needed} to DATABASE_URL or lower SYNC_CONCURRENCY.`
+  );
 }
 
 /**

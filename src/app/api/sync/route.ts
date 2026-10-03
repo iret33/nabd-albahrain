@@ -20,6 +20,8 @@
  * the answer is truthful:
  *   202 { started: true, runId }
  *   409 { started: false, error: "sync_already_running", since }
+ *   400 { error: "invalid_dataset" } for an id that cannot exist (over 200
+ *       characters, a NUL byte or other control character, a lone surrogate)
  * The run itself continues in the background; cache invalidation happens at
  * the end of the run (src/lib/sync/notify.ts -> POST /api/revalidate).
  */
@@ -28,6 +30,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { startSyncInBackground } from "@/lib/sync/engine";
 import { startRecomputeInBackground } from "@/lib/sync/recompute";
 import { authorizeSyncRequest, syncAuthFailureResponse } from "@/lib/sync/auth";
+import { isPublicDatasetId } from "@/lib/sync/refresh-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +45,9 @@ export async function POST(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const datasetId = searchParams.get("dataset") || undefined;
-  if (datasetId !== undefined && datasetId.length > 300) {
+  // Same id rule as the public routes: a NUL byte would otherwise start a run
+  // that dies on its first query and leaves a failed row behind.
+  if (datasetId !== undefined && !isPublicDatasetId(datasetId)) {
     return NextResponse.json({ error: "invalid_dataset" }, { status: 400 });
   }
   const force = isTrue(searchParams, "force");
