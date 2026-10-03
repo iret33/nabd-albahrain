@@ -42,13 +42,19 @@
  * Embark/Disembark/Transit/Transfers") — summing all of them together
  * (the old behavior) double-counted the total against its own parts,
  * inflating airport passengers from a real ~1.5M to ~4.7M. Fixed at the
- * source in `extractFeaturedMetric()` (`pickTotalSeriesKey()`): when a
- * multi-line series includes an already-labeled total, use that value
- * directly instead of summing everything — verified against real data
- * that this now produces the correct ~1.5M / ~107,010 TEU figures. This
- * fix applies everywhere `extractFeaturedMetric()` is used (every
- * `DatasetCard` sparkline site-wide, not just this featured band), so it's
- * not specific to these two entries.
+ * source: when a multi-line series includes an already-labeled total, that
+ * value is used directly instead of summing everything — verified against
+ * real data that this produces the correct ~1.5M / ~107,010 TEU figures.
+ * The rule now lives in ONE place, `src/lib/headline.ts` (with the total
+ * detection in `src/lib/series.ts`): `derived.ts` calls it at sync time and
+ * persists the result as `vizConfig.headline` (also used for the dataset
+ * page's lead sentence, which used to double count), and
+ * `extractFeaturedMetric()` reads that value (recomputing with the same
+ * function for rows synced before it existed). It applies to every
+ * `DatasetCard` sparkline site-wide, not just this featured band. When the
+ * headline cannot be stated honestly (two "Total X" series, a rate that
+ * cannot be summed) the headline is null and the entry below is skipped,
+ * exactly like an id that has not been synced yet.
  *
  * Kept to 6 entries as before — each one costs a query + a chart on the
  * home page. Picked for a mix of recognizable, genuinely newsworthy
