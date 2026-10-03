@@ -65,15 +65,15 @@ jobs:
     steps:
       # No later step pushes or fetches with git credentials, so do not leave
       # the token in .git/config.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       # No `version:` — pnpm/action-setup reads package.json's "packageManager",
       # the same pin the Dockerfile and local development use.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -123,16 +123,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Build only (nothing is pushed). A fresh checkout has no public/ and no
       # .env, so this catches Dockerfile regressions such as the missing-public
       # COPY that broke the first clean `docker compose up --build`.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: false
