@@ -22,8 +22,9 @@ export async function loginAction(formData: FormData): Promise<void> {
   // "succeed", draw the dashboard once from the just-set cookie and then loop
   // back to the form with nothing to explain why. Say so up front instead —
   // BEFORE the token is compared, so it neither spends the throttle budget nor
-  // reveals whether the token was right. Positive evidence only (a trusted
-  // X-Forwarded-Proto of "http"); the cookie itself is never weakened.
+  // reveals whether the token was right. Positive evidence only: the browser's
+  // own Origin header says http on a non-loopback host (X-Forwarded-Proto
+  // cannot be used, Next invents it). The cookie itself is never weakened.
   if (adminCookieOptions().secure && isInsecureLoginRequest(requestHeaders)) {
     redirect("/admin/login?error=insecure");
   }

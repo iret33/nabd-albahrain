@@ -45,7 +45,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe("loginAction over plain http in production", () => {
   it("explains instead of half-logging in: ?error=insecure, no throttle spend, no token compare, no cookie", async () => {
-    state.headers = new Headers({ host: "192.0.2.2:3000", "x-forwarded-proto": "http" });
+    state.headers = new Headers({ host: "192.0.2.2:3000", origin: "http://192.0.2.2:3000" });
     await expect(loginAction(form("whatever"))).rejects.toThrow("REDIRECT /admin/login?error=insecure");
     expect(state.attempt).not.toHaveBeenCalled();
     expect(state.cookieSet).not.toHaveBeenCalled();
@@ -53,39 +53,52 @@ describe("loginAction over plain http in production", () => {
 
   it("does the same for the correct token (never reveals that it was right)", async () => {
     state.attempt.mockResolvedValue({ kind: "ok", session: "signed" });
-    state.headers = new Headers({ host: "data.hekkapp.com", "x-forwarded-proto": "http" });
+    state.headers = new Headers({ host: "data.hekkapp.com", origin: "http://data.hekkapp.com" });
     await expect(loginAction(form("the-right-token"))).rejects.toThrow("?error=insecure");
     expect(state.cookieSet).not.toHaveBeenCalled();
   });
 
-  it("does NOT block on a missing X-Forwarded-Proto (a TLS-terminating proxy that does not forward it must keep working)", async () => {
-    state.headers = new Headers({ host: "data.hekkapp.com" });
+  it("needs no proxy configuration: the browser's Origin is the evidence, TRUST_PROXY is irrelevant", async () => {
+    for (const trust of ["0", "1", ""]) {
+      vi.stubEnv("TRUST_PROXY", trust);
+      state.headers = new Headers({ host: "192.0.2.2:3000", origin: "http://192.0.2.2:3000" });
+      await expect(loginAction(form("x"))).rejects.toThrow("?error=insecure");
+    }
+  });
+
+  it("does NOT block on the X-Forwarded-Proto Next invents (a TLS-terminating proxy that forwards no header must keep working)", async () => {
+    // Next's base-server sets x-forwarded-proto: http / x-forwarded-host: <Host> on requests that carry none.
+    state.headers = new Headers({
+      host: "data.hekkapp.com",
+      origin: "https://data.hekkapp.com",
+      "x-forwarded-proto": "http",
+      "x-forwarded-host": "data.hekkapp.com",
+    });
     await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin/login?error=1");
     expect(state.attempt).toHaveBeenCalledTimes(1);
   });
 
-  it("does not block https, or a loopback host reached over http (a secure context)", async () => {
-    for (const headers of [
-      { host: "data.hekkapp.com", "x-forwarded-proto": "https" },
-      { host: "localhost:3000", "x-forwarded-proto": "http" },
-      { host: "127.0.0.1:3000", "x-forwarded-proto": "http" },
-    ]) {
+  it("does NOT block a missing, null or unparsable Origin (no evidence)", async () => {
+    for (const origin of [undefined, "null", "garbage"]) {
       state.attempt.mockClear();
-      state.headers = new Headers(headers);
+      state.headers = new Headers(origin === undefined ? { host: "data.hekkapp.com" } : { host: "data.hekkapp.com", origin });
       await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin/login?error=1");
       expect(state.attempt).toHaveBeenCalledTimes(1);
     }
   });
 
-  it("ignores a forged X-Forwarded-Proto when TRUST_PROXY is off", async () => {
-    vi.stubEnv("TRUST_PROXY", "0");
-    state.headers = new Headers({ host: "data.hekkapp.com", "x-forwarded-proto": "http" });
-    await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin/login?error=1");
+  it("does not block https, or a loopback host reached over http (a secure context)", async () => {
+    for (const origin of ["https://data.hekkapp.com", "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
+      state.attempt.mockClear();
+      state.headers = new Headers({ host: new URL(origin).host, origin });
+      await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin/login?error=1");
+      expect(state.attempt).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("still sets the Secure __Host- style cookie on success (the cookie is never weakened)", async () => {
     state.attempt.mockResolvedValue({ kind: "ok", session: "signed-session" });
-    state.headers = new Headers({ host: "data.hekkapp.com", "x-forwarded-proto": "https" });
+    state.headers = new Headers({ host: "data.hekkapp.com", origin: "https://data.hekkapp.com" });
     await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin");
     expect(state.cookieSet).toHaveBeenCalledTimes(1);
     const [, value, options] = state.cookieSet.mock.calls[0];
@@ -95,9 +108,9 @@ describe("loginAction over plain http in production", () => {
 });
 
 describe("loginAction outside production (next dev, unprefixed non-Secure cookie)", () => {
-  it("does not apply the insecure check", async () => {
+  it("does not apply the insecure check (the cookie is storable over http there)", async () => {
     vi.stubEnv("NODE_ENV", "development");
-    state.headers = new Headers({ host: "192.0.2.2:3000", "x-forwarded-proto": "http" });
+    state.headers = new Headers({ host: "192.0.2.2:3000", origin: "http://192.0.2.2:3000" });
     await expect(loginAction(form("x"))).rejects.toThrow("REDIRECT /admin/login?error=1");
     expect(state.attempt).toHaveBeenCalledTimes(1);
   });

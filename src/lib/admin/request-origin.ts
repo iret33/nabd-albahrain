@@ -135,14 +135,30 @@ export function requestOrigin(headers: HeaderBag, fallbackUrl: string | URL, env
 }
 
 /**
- * Positive evidence that the admin login is being used over plain http from a
- * non-loopback host, where the browser will drop the `Secure` / `__Host-`
- * session cookie. Deliberately fail-open: a missing or unreadable
- * X-Forwarded-Proto is NOT evidence (a proxy that terminates TLS but does not
- * forward the header would otherwise lock every production login out).
+ * Positive evidence that the admin login form was submitted from a page served
+ * over plain http on a non-loopback host, where the browser will drop the
+ * `Secure` / `__Host-` session cookie.
+ *
+ * The evidence is the browser's own `Origin` header on the POST (it names the
+ * page's real scheme and host whatever sits in between, so no proxy header and
+ * no TRUST_PROXY is involved). `X-Forwarded-Proto` is deliberately NOT used:
+ * Next fabricates `x-forwarded-proto: http` on every request that arrives
+ * without one (base-server.js), so inside a Server Action it cannot tell "the
+ * proxy says http" from "the proxy sent nothing", and trusting it would lock
+ * every production login out behind a proxy that terminates TLS but does not
+ * forward the header (default nginx). Fail-open on anything else: no Origin, an
+ * unparsable one, `null`, https, or a loopback host all mean "no evidence".
  */
-export function isInsecureLoginRequest(headers: HeaderBag, env: Env = process.env): boolean {
-  if (forwardedProto(headers, env) !== "http") return false;
-  const host = requestedHost(headers, env);
-  return host !== null && !isLoopbackHostname(host.hostname);
+export function isInsecureLoginRequest(headers: HeaderBag): boolean {
+  const raw = firstHeaderValue(headers.get("origin"));
+  if (!raw) return false;
+  let origin: URL;
+  try {
+    origin = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (origin.protocol !== "http:") return false;
+  const hostname = origin.hostname.replace(/^\[|\]$/g, ""); // URL keeps the brackets of an IPv6 literal
+  return !isLoopbackHostname(hostname);
 }

@@ -150,29 +150,47 @@ describe("requestOrigin", () => {
   });
 });
 
-describe("isInsecureLoginRequest (positive evidence only)", () => {
-  it("flags X-Forwarded-Proto: http on a non-loopback host when the proxy is trusted", () => {
-    expect(isInsecureLoginRequest(h({ host: "data.hekkapp.com", "x-forwarded-proto": "http" }), TRUSTED)).toBe(true);
-    expect(isInsecureLoginRequest(h({ host: "10.0.0.5:3000", "x-forwarded-proto": "HTTP, https" }), TRUSTED)).toBe(true);
-    expect(isInsecureLoginRequest(h({ host: "127.0.0.1", "x-forwarded-host": "192.0.2.2", "x-forwarded-proto": "http" }), TRUSTED)).toBe(true);
+describe("isInsecureLoginRequest (positive evidence only: the browser's Origin)", () => {
+  it("flags a form posted from an http page on a non-loopback host", () => {
+    for (const origin of [
+      "http://192.0.2.2:3000",
+      "http://192.168.1.20",
+      "http://data.hekkapp.com",
+      "HTTP://Data.HekkApp.com:8080",
+      "http://127.evil.com", // not 127.0.0.0/8
+      "http://localhost.evil.com",
+      "http://[2001:db8::1]:3000",
+    ]) {
+      expect(isInsecureLoginRequest(h({ origin })), origin).toBe(true);
+    }
   });
 
-  it("does NOT flag https, loopback hosts, or a missing/unreadable header (a proxy that does not forward the header must not lock logins out)", () => {
-    expect(isInsecureLoginRequest(h({ host: "data.hekkapp.com", "x-forwarded-proto": "https" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ host: "data.hekkapp.com" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ host: "data.hekkapp.com", "x-forwarded-proto": "weird" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ host: "localhost:3000", "x-forwarded-proto": "http" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ host: "[::1]:3000", "x-forwarded-proto": "http" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ host: "127.0.0.1:3000", "x-forwarded-proto": "http" }), TRUSTED)).toBe(false);
-    expect(isInsecureLoginRequest(h({ "x-forwarded-proto": "http" }), TRUSTED)).toBe(false);
+  it("does NOT flag https or loopback origins (a secure context: the browser keeps a Secure cookie)", () => {
+    for (const origin of [
+      "https://data.hekkapp.com",
+      "https://192.0.2.2:3000",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://127.255.0.2",
+      "http://app.localhost:3000",
+      "http://[::1]:3000",
+    ]) {
+      expect(isInsecureLoginRequest(h({ origin })), origin).toBe(false);
+    }
   });
 
-  it("does not look at forwarded headers at all without TRUST_PROXY=1", () => {
-    expect(isInsecureLoginRequest(h({ host: "data.hekkapp.com", "x-forwarded-proto": "http" }), UNTRUSTED)).toBe(false);
+  it("fails open on anything that is not clear evidence (no lockout from a missing or odd header)", () => {
+    for (const origin of [undefined, "", "null", "not a url", "ftp://192.0.2.2", "//192.0.2.2", "http://"]) {
+      expect(isInsecureLoginRequest(origin === undefined ? h({}) : h({ origin })), String(origin)).toBe(false);
+    }
   });
 
-  it("is not fooled by loopback look-alike hosts", () => {
-    expect(isInsecureLoginRequest(h({ host: "127.evil.com", "x-forwarded-proto": "http" }), TRUSTED)).toBe(true);
-    expect(isInsecureLoginRequest(h({ host: "localhost.evil.com", "x-forwarded-proto": "http" }), TRUSTED)).toBe(true);
+  it("ignores X-Forwarded-Proto and Host entirely: Next invents `x-forwarded-proto: http` on requests that carry none", () => {
+    // What a Server Action sees behind a TLS-terminating proxy that forwards no X-Forwarded-Proto
+    // (default nginx): Next's base-server adds x-forwarded-proto: http and x-forwarded-host: <Host>.
+    const injected = h({ host: "data.hekkapp.com", "x-forwarded-proto": "http", "x-forwarded-host": "data.hekkapp.com" });
+    expect(isInsecureLoginRequest(injected)).toBe(false);
+    // ...and with the browser's real https Origin it stays false, whatever the injected header says.
+    expect(isInsecureLoginRequest(h({ origin: "https://data.hekkapp.com", "x-forwarded-proto": "http" }))).toBe(false);
   });
 });

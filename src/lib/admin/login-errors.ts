@@ -11,12 +11,16 @@
 
 export type LoginErrorCode = "rate" | "insecure" | "session";
 
+/**
+ * A Latin token inside an RTL sentence, isolated so the `//` of a URL cannot
+ * hop to the other side of `https` (neutrals next to Arabic take the RTL direction).
+ */
+const ltr = (token: string) => `⁦${token}⁩`;
+
 export const LOGIN_ERROR_MESSAGES: Record<LoginErrorCode, string> = {
   rate: "محاولات خاطئة كثيرة. انتظر نحو 15 دقيقة ثم حاول مرة أخرى.",
-  insecure:
-    "تعذّر تسجيل الدخول عبر اتصال غير مشفّر (HTTP): لا يحفظ المتصفح جلسة الدخول الآمنة عبر HTTP. افتح لوحة الإدارة عبر https:// أو عبر localhost ثم حاول مرة أخرى.",
-  session:
-    "انتهت الجلسة. سجّل الدخول من جديد. وإن تكرر ذلك مباشرة بعد الدخول فالمتصفح لا يحفظ ملف الجلسة: استخدم https:// أو localhost.",
+  insecure: `تعذّر تسجيل الدخول عبر اتصال غير مشفّر (HTTP): لا يحفظ المتصفح جلسة الدخول الآمنة عبر HTTP. افتح لوحة الإدارة عبر ${ltr("https://")} أو عبر ${ltr("localhost")} ثم حاول مرة أخرى.`,
+  session: `انتهت الجلسة. سجّل الدخول من جديد. وإن تكرر ذلك مباشرة بعد الدخول فالمتصفح لا يحفظ ملف الجلسة: استخدم ${ltr("https://")} أو ${ltr("localhost")}.`,
 };
 
 export const WRONG_TOKEN_MESSAGE = "الرمز غير صحيح. حاول مرة أخرى.";
