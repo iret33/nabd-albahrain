@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { RUN_INTEGRATION, setupHarness, type Harness } from "./helpers";
+import { RUN_INTEGRATION, setupHarness, waitUntil, type Harness } from "./helpers";
 
 describe.skipIf(!RUN_INTEGRATION)("recompute (integration: no network)", () => {
   let h: Harness;
@@ -125,8 +125,8 @@ describe.skipIf(!RUN_INTEGRATION)("recompute (integration: no network)", () => {
     if (!started.started) return;
     const log = await h.prisma.syncLog.findUniqueOrThrow({ where: { id: started.runId } });
     expect(["running", "success"]).toContain(log.status);
-    const handle = await h.lock.acquireLock().catch((e) => e);
-    if (handle.release) await handle.release(); // the run was already done
-    else expect(handle.name).toBe("SyncAlreadyRunningError");
+    await waitUntil(async () => !(await h.lock.getLockState()).running, { what: "the recompute to finish" });
+    const done = await h.prisma.syncLog.findUniqueOrThrow({ where: { id: started.runId } });
+    expect(done).toMatchObject({ status: "success", scope: "recompute", updated: 1 });
   });
 });

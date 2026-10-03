@@ -449,8 +449,8 @@ interface RunState {
   counters: RunCounters;
   failures: RunFailure[];
   changed: ChangedSets;
-  /** A complete catalog pass finished and was applied. */
-  catalogPassDone: boolean;
+  /** When a complete catalog pass finished and was applied (null = none did). */
+  catalogCheckedAt: Date | null;
 }
 
 function newRunState(): RunState {
@@ -458,7 +458,7 @@ function newRunState(): RunState {
     counters: { total: 0, processed: 0, succeeded: 0, failed: 0, skipped: 0, updated: 0 },
     failures: [],
     changed: emptyChangedSets(),
-    catalogPassDone: false,
+    catalogCheckedAt: null,
   };
 }
 
@@ -539,7 +539,7 @@ async function catalogPhase(
     st.changed.added.push(...(await upsertCatalogMetadata(catalog.datasets, stored)));
     st.changed.removed.push(...(await flagRemoved(absent, now)));
     await markChecked(catalog.seenIds, now);
-    st.catalogPassDone = true;
+    st.catalogCheckedAt = now;
   } else {
     st.changed.added.push(...catalog.datasets.map((d) => d.dataset_id).filter((id) => !stored.has(id)));
     st.changed.removed.push(...absent);
@@ -651,7 +651,8 @@ async function executeRun(ctx: RunContext, opts: RunSyncOptions): Promise<RunSyn
 
   const now = new Date();
   const statePatch: { lastCatalogCheckAt?: Date; lastSuccessAt?: Date; lastDataChangeAt?: Date } = {};
-  if (st.catalogPassDone) statePatch.lastCatalogCheckAt = now;
+  // The moment the catalog pass was applied, not the end of a possibly long run.
+  if (st.catalogCheckedAt) statePatch.lastCatalogCheckAt = st.catalogCheckedAt;
   // A single-dataset run says nothing about the health of the catalog-wide
   // schedule, so it must not mask a failing scheduler in the `stale` signal.
   if ((status === "success" || status === "partial") && !opts.datasetId) statePatch.lastSuccessAt = now;
