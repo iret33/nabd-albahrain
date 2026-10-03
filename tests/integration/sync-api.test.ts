@@ -918,7 +918,7 @@ describe.skipIf(!RUN_INTEGRATION)("HTTP API (route handlers + Postgres + in-proc
       expect(ready.sync.failingDatasets).toBe(3);
     });
 
-    it("version comes from GIT_SHA and is null when unset or empty (r1-08 / R6-08 code side)", async () => {
+    it("version comes from GIT_SHA and is null when unset or empty (R6-08, code side)", async () => {
       const saved = process.env.GIT_SHA;
       try {
         delete process.env.GIT_SHA;

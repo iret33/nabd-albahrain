@@ -20,6 +20,8 @@
  * the answer is truthful:
  *   202 { started: true, runId }
  *   409 { started: false, error: "sync_already_running", since }
+ *   400 { error: "invalid_dataset" } for an id that cannot exist (over 200
+ *       characters, a NUL byte or other control character, a lone surrogate)
  * The run itself continues in the background; cache invalidation happens at
  * the end of the run (src/lib/sync/notify.ts -> POST /api/revalidate).
  */
