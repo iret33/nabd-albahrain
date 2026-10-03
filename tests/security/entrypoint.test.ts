@@ -20,7 +20,11 @@ const GOOD_SYNC = "0be7a4d1c6f28359e0b4a7d2c1f68e35b9a0d4c7e2f1a6b8d3c5e9f07a2b4
 let work: string;
 let stubBin: string;
 
+// The container is Linux/busybox; the script is POSIX sh and needs coreutils (fold/sort/wc/tr).
+const SKIP = process.platform === "win32";
+
 beforeAll(() => {
+  if (SKIP) return;
   work = mkdtempSync(path.join(tmpdir(), "nabd-entrypoint-"));
   stubBin = path.join(work, "stub-bin");
   mkdirSync(stubBin);
@@ -33,7 +37,9 @@ beforeAll(() => {
   stub(path.join(stubBin, "node"), 'echo "NODE $*"');
 });
 
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => {
+  if (work) rmSync(work, { recursive: true, force: true });
+});
 
 function run(args: string[], env: Record<string, string>) {
   const r = spawnSync("sh", [ENTRYPOINT, ...args], {
@@ -46,7 +52,7 @@ function run(args: string[], env: Record<string, string>) {
 
 const validEnv = { ADMIN_TOKEN: GOOD_ADMIN, SYNC_TOKEN: GOOD_SYNC, DATABASE_URL: "postgresql://u:p@db:5432/nabd" };
 
-describe("entrypoint.sh: modes", () => {
+describe.skipIf(SKIP)("entrypoint.sh: modes", () => {
   it("migrates then starts the server with no arguments", () => {
     const r = run([], validEnv);
     expect(r.code).toBe(0);
@@ -81,7 +87,7 @@ describe("entrypoint.sh: modes", () => {
   });
 });
 
-describe("entrypoint.sh: fails closed before migrating", () => {
+describe.skipIf(SKIP)("entrypoint.sh: fails closed before migrating", () => {
   const refused = (env: Record<string, string>, args: string[] = []) => {
     const r = run(args, env);
     expect(r.code).toBe(1);
@@ -104,7 +110,7 @@ describe("entrypoint.sh: fails closed before migrating", () => {
   });
 });
 
-describe("entrypoint.sh agrees with src/lib/env.ts weakSecretReason", () => {
+describe.skipIf(SKIP)("entrypoint.sh agrees with src/lib/env.ts weakSecretReason", () => {
   const values: Array<string | undefined> = [
     "5c8e1f03a7b94d26e0c3f81a9b7d5e42c6a0f3b8d1e47a95c2b60f8e3d1a7c94", // valid, and different from validEnv's tokens
     "Zk3-pQ9_vLm2XrT8uYw5NbC7HdJ4sFgA1eO6iKaV",
