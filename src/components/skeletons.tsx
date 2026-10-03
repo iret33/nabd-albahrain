@@ -35,6 +35,23 @@ export function CardGridSkeleton({ count = 9 }: { count?: number }) {
   );
 }
 
+/**
+ * Filter bar + card grid, the shape of a listing's results. Used as the inline
+ * <Suspense> fallback of /categories/[theme] and /publishers/[slug]: those pages
+ * validate the theme/slug (a real 404) BEFORE this boundary, so the skeleton
+ * can stream without ever committing a 200 for an unknown value.
+ */
+export function ListResultsSkeleton({ count = 9 }: { count?: number }) {
+  return (
+    <div aria-hidden="true">
+      <Block className="h-44 w-full rounded-2xl sm:h-32" />
+      <div className="mt-6">
+        <CardGridSkeleton count={count} />
+      </div>
+    </div>
+  );
+}
+
 export function ThemeTileSkeleton() {
   return (
     <div className="rounded-2xl border border-line-light bg-white p-6">
