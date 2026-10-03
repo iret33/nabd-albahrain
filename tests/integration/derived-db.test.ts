@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RUN_INTEGRATION, setupHarness, type Harness } from "./helpers";
 import type { CatalogField } from "@/lib/sync/schemas";
 import type { VizConfig } from "@/lib/sync/derived";
+import oldShapes from "../derived/fixtures/old-shapes.json";
 
 /**
  * Runs the derivation engine over every dataset synced from the in-process
@@ -73,5 +74,51 @@ describe.skipIf(!RUN_INTEGRATION)("derived fields over real database rows", () =
       }
     }
     expect(temporal).toBeGreaterThan(0);
+  });
+  it("a database stamped with the PREVIOUS derivation version is re-derived to the current one (new grammar, no stale sentences)", async () => {
+    const old = h.derived.DERIVED_VERSION - 1;
+    await h.prisma.dataset.updateMany({ data: { derivedVersion: old, summaryAr: "تحتوي قاعدة البيانات على 8 سجلاً عبر 2 حقلاً." } });
+    const needing = await h.recompute.countDatasetsNeedingRecompute();
+    expect(needing).toBeGreaterThan(0);
+
+    h.mock.state.hits.total = 0;
+    const r = await h.recompute.runRecompute({ trigger: "test" });
+    expect(r).toMatchObject({ status: "success", failed: 0, skippedPartial: [] });
+    expect(r.updated).toBe(needing);
+    expect(h.mock.state.hits.total).toBe(0); // from stored rows only
+
+    // recompute only visits datasets that have rows (sourceCount > 0): a zero-row dataset is a cross-file
+    // concern of recompute.ts, so it is derived directly below.
+    const rows = await h.prisma.dataset.findMany({ where: { sourceCount: { gt: 0 } } });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const d of rows) {
+      expect(d.derivedVersion, d.id).toBe(h.derived.DERIVED_VERSION);
+      expect(d.summaryAr, d.id).toBeTruthy();
+      expect(d.summaryAr, d.id).not.toMatch(/قاعدة البيانات|سجلاً|حقلاً/);
+    }
+    expect(await h.recompute.countDatasetsNeedingRecompute()).toBe(0);
+
+    // an empty dataset reads as empty, not as "0 records across 2 fields"
+    const empty = await h.prisma.dataset.findUniqueOrThrow({ where: { id: "empty-dataset" } });
+    const derived = await h.derived.computeDerivedFields(empty.id, [], empty.fieldsJson as unknown as CatalogField[]);
+    expect(derived.summaryAr).toBe("لا تحتوي مجموعة البيانات على أي سجلات.");
+  });
+
+  it("vizConfig/chartData shapes written by older engines survive the Postgres JSON round trip and still extract", async () => {
+    const { extractFeaturedMetric } = await import("@/lib/chart-data");
+    const fixtures: Array<[string, { vizConfig: unknown; chartData: unknown }, number | null]> = [
+      ["energy-consumption", oldShapes.energyConsumption, 18620],
+      ["population-by-nationality", oldShapes.population, 2233000],
+      ["unemployment-rate", oldShapes.unemployment, 3.6],
+      ["schools-by-type", oldShapes.schools, null],
+    ];
+    for (const [id, fx] of fixtures) {
+      await h.prisma.dataset.update({ where: { id }, data: { vizConfig: fx.vizConfig as never, chartData: (fx.chartData ?? undefined) as never } });
+      const d = await h.prisma.dataset.findUniqueOrThrow({ where: { id } });
+      const metric = extractFeaturedMetric(d.vizConfig as unknown as VizConfig, Array.isArray(d.chartData) ? d.chartData : null);
+      const expected = fixtures.find(([i]) => i === id)![2];
+      if (expected === null) expect(metric, id).toBeNull();
+      else expect(metric?.value, id).toBe(expected);
+    }
   });
 });

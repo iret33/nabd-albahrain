@@ -342,7 +342,7 @@ export function chartCaptionParts(vizConfig: VizConfig | null): ChartCaptionPart
       notes.push(`بيانات ${provisional.slice(-3).map(formatPeriodAr).join("، ")} أولية`);
     }
     if (vizConfig.droppedPeriodRows) {
-      notes.push(`صفوف استُبعدت لأن تاريخها غير مفهوم: ${countFormatter.format(vizConfig.droppedPeriodRows)}`);
+      notes.push(`صفوف استُبعدت لأن تاريخها مفقود أو غير مفهوم: ${countFormatter.format(vizConfig.droppedPeriodRows)}`);
     }
     if (vizConfig.supersededProvisionalRows) {
       notes.push(

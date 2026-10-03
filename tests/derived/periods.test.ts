@@ -96,7 +96,7 @@ describe("r3-07: a provisional newest period is charted, flagged, and quoted as 
     const { viz } = await derive(recs, [field("year", "text", "Year"), field("births", "int", "Births")]);
     const v = viz as Area;
     expect(v.droppedPeriodRows).toBe(2);
-    expect(chartCaptionParts(v).notes.join(" ")).toContain("صفوف استُبعدت لأن تاريخها غير مفهوم: 2");
+    expect(chartCaptionParts(v).notes.join(" ")).toContain("صفوف استُبعدت لأن تاريخها مفقود أو غير مفهوم: 2");
   });
 
   it("a clean table carries none of the new optional fields", async () => {

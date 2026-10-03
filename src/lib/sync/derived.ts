@@ -201,7 +201,7 @@ interface TemporalMeta {
   headlineWithheld?: HeadlineWithheld;
   /** Periods (ascending, at most the last 12) whose rows carried a provisional marker such as "2024*". */
   provisionalPeriods?: string[];
-  /** Rows left out because their period could not be read (only counted when they had a value); absent when 0. */
+  /** Rows left out because their period is missing or could not be read (only counted when they had a value); absent when 0. */
   droppedPeriodRows?: number;
   /** Provisional rows left out because the same period also had final rows; absent when 0. */
   supersededProvisionalRows?: number;

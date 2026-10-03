@@ -53,7 +53,8 @@
  * function for rows synced before it existed). It applies to every
  * `DatasetCard` sparkline site-wide, not just this featured band. When the
  * headline cannot be stated honestly (two "Total X" series, a rate that
- * cannot be summed) the headline is null and the entry below is skipped,
+ * cannot be summed, series that are different indicators such as a rate next
+ * to a head count) the headline is null and the entry below is skipped,
  * exactly like an id that has not been synced yet.
  *
  * Kept to 6 entries as before — each one costs a query + a chart on the
