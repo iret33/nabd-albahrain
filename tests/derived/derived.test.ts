@@ -65,7 +65,7 @@ describe("imports/exports: several 'Total X' series is ambiguous, not 'first mat
     expect(viz.totalKey).toBeNull();
     expect(viz.headline).toBeNull();
     // no made-up number: the generic sentence
-    expect(summaryAr).toBe("تحتوي قاعدة البيانات على 24 سجلاً عبر 3 حقلاً.");
+    expect(summaryAr).toBe("تحتوي مجموعة البيانات على 24 سجلًا عبر 3 حقول.");
   });
 });
 
@@ -210,7 +210,7 @@ describe("Total rows on a hidden dimension are never summed with their parts", (
     expect(rows.map((r) => r.category)).toEqual(["Services", "Industry", "Agriculture"]);
     expect(viz.categoryCount).toBe(3);
     expect(viz.excludedTotals).toEqual(["Total"]);
-    expect(summaryAr).toBe("الفئة الأعلى: «Services» بقيمة 30 من أصل 3 فئة.");
+    expect(summaryAr).toBe("الفئة الأعلى: «Services» بقيمة 30 من أصل 3 فئات.");
   });
 
   it("negative: 'Total Imports' as a legitimate part is NOT dropped on a hidden dimension", async () => {
@@ -414,7 +414,9 @@ describe("partial trailing period", () => {
     if (viz.type !== "multi-line") throw new Error("expected multi-line");
     expect(viz.lastPeriodPartial).toBe(false);
     expect(summaryAr).toContain("في 2026");
-    expect(summaryAr).toContain("+0.0%");
+    // one convention for a change that rounds to 0.0: no sign (r3-12)
+    expect(summaryAr).toContain("بتغير 0.0%");
+    expect(summaryAr).not.toContain("+0.0%");
   });
 
   it("area chart: same rule", async () => {
@@ -761,7 +763,7 @@ describe("golden configs per chart type (unrelated behavior must not regress)", 
     });
     expect(out.rows).toHaveLength(10);
     expect(out.rows.reduce((s, r) => s + (r.count as number), 0)).toBe(40);
-    expect(out.summaryAr).toBe("تحتوي قاعدة البيانات على 40 سجلاً عبر 1 حقلاً.");
+    expect(out.summaryAr).toBe("تحتوي مجموعة البيانات على 40 سجلًا عبر حقل واحد.");
   });
 
   it("table: geo", async () => {
@@ -783,7 +785,7 @@ describe("golden configs per chart type (unrelated behavior must not regress)", 
   it("no fields / empty records", async () => {
     const none = await derive([{ a: 1 }], []);
     expect(none.vizConfig).toBeNull();
-    expect(none.summaryAr).toBe("تحتوي قاعدة البيانات على 1 سجلاً عبر 0 حقلاً.");
+    expect(none.summaryAr).toBe("تحتوي مجموعة البيانات على سجل واحد.");
     const empty = await derive([], [field("year", "text", "Year"), field("value", "int", "Value")]);
     expect(empty.vizConfig).toMatchObject({ type: "table" });
   });

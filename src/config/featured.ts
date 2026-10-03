@@ -65,6 +65,19 @@
 export interface FeaturedEntry {
   datasetId: string;
   metricLabelAr: string;
+  /**
+   * Optional guard: the numeric field this band entry is ABOUT (e.g. the Total
+   * column of a wide table). When set, the home band should skip the entry if
+   * the dataset's derived `vizConfig.measureField` is a different column,
+   * because the hand-written `metricLabelAr` would then caption another number
+   * (non-Bahraini population under "عدد السكان"). Left unset for every entry
+   * below: the real portal schema is not available to confirm the field names,
+   * and a wrong name would hide a good card. Pin an id here, and in
+   * `src/config/viz-overrides.ts` (`measureField`), only after checking its
+   * actual columns. Entries whose chart has no `measureField` (tables, rows
+   * synced before the field existed) are never skipped by this guard.
+   */
+  measureField?: string;
 }
 
 export const featuredEntries: FeaturedEntry[] = [

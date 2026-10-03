@@ -40,7 +40,18 @@
  *   - Temporal parsing is a strict whitelist (src/lib/temporal.ts); a bare
  *     "Month" column is combined with a sibling year column, never treated as
  *     a date on its own. Missing periods are filled with null rows so gaps
- *     are visible.
+ *     are visible. A provisional marker ("2024*", "2024 (p)") is stripped from
+ *     the period and recorded (`provisionalPeriods`, `headline.provisional`),
+ *     never silently; rows with a period that cannot be read are counted
+ *     (`droppedPeriodRows`), never silently dropped.
+ *   - A "Total" that labels cannot prove is a total is only dropped when the
+ *     numbers agree (it equals the sum of its siblings), and a mean (rate,
+ *     index) over a hidden dimension uses the PUBLISHED overall figure when the
+ *     table carries one for every period, instead of an unweighted mean of the
+ *     parts. Series that are different indicators are never summed.
+ *   - Identifier-like numeric columns (phone, CPR, building, road, block ...)
+ *     are never the measure; reserved chart keys (period, category, __proto__)
+ *     in the data never corrupt a chart row.
  *
  * This function must never throw: a single dataset's derived-field
  * computation failing must never crash the sync loop (same rule the spec
@@ -51,17 +62,25 @@
 
 import type { CatalogField } from "./schemas";
 import { getVizOverride, type VizOverride } from "@/config/viz-overrides";
+import { NOUNS, countPhrase } from "@/lib/arabic-count";
 import {
-  detectPartialLastPeriod,
   fillPeriodGaps,
+  findNumericTotalSeries,
   findTotalSeries,
   inferAggregate,
   inferUnitFromLabel,
+  isIdentifierLikeName,
+  isLastPeriodPartial,
+  isLooseTotalLabel,
   isStrictTotalLabel,
+  isTotalCandidateLabel,
   median,
   sumSeriesRow,
+  totalCellsAgree,
   type Aggregate,
   type Grain,
+  type PeriodCoverage,
+  type TotalCell,
 } from "@/lib/series";
 import {
   isMonthOnlyName,
@@ -76,11 +95,14 @@ import {
   buildHeadlineSentence,
   computeHeadline,
   formatSummaryNumber,
+  headlineWithheldReason,
   type Headline,
+  type HeadlineSource,
+  type HeadlineWithheld,
 } from "@/lib/headline";
 
 export type { Aggregate, Grain } from "@/lib/series";
-export type { Headline, HeadlineBasis } from "@/lib/headline";
+export type { Headline, HeadlineBasis, HeadlineWithheld } from "@/lib/headline";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -91,8 +113,24 @@ export type { Headline, HeadlineBasis } from "@/lib/headline";
  * the persisted statsJson/vizConfig/chartData/summaryAr for the same input.
  * `Dataset.derivedVersion` records which version produced a row; rows with an
  * older version are re-derived from their stored records (no network).
+ *
+ *   1  original engine
+ *   2  viz-engine rewrite (headline, totals, partial periods). It was NOT
+ *      bumped for the rewrite itself, so a database stamped 2 by a build from
+ *      before that rewrite still holds the old numbers.
+ *   3  number-correctness pass: Arabic count agreement in the generated
+ *      sentences, one percent/number convention, heterogeneous-series and
+ *      identifier-measure gates, numeric total verification, total-only means,
+ *      provisional/unparseable period bookkeeping, calendar partial-period
+ *      detection, collision-free "أخرى" bucket and reserved chart keys. Any
+ *      database stamped 2 (by this branch or an earlier build) is re-derived.
+ *
+ * Datasets with `syncStatus: "partial"` cannot be recomputed locally (only a
+ * capped 50,000-row prefix is stored, while the engine derives from the full
+ * export). recompute.ts lists them in `skippedPartial`; they keep their old
+ * derived columns until a forced sync of that dataset re-downloads it.
  */
-export const DERIVED_VERSION = 2;
+export const DERIVED_VERSION = 3;
 
 export interface FieldStats {
   name: string;
@@ -136,6 +174,13 @@ interface VizMeta {
   hiddenDimensions?: string[];
   /** Distinct "Total" values whose rows/categories were left out to avoid counting parts and total together. */
   excludedTotals?: string[];
+  /**
+   * Mean aggregates only: the published "Total" values that were USED (the overall rate/index) instead of an
+   * unweighted mean of the parts. Those dimensions are at their Total level, so they are not in `hiddenDimensions`.
+   */
+  usedTotals?: string[];
+  /** Mean aggregates only: the parts were averaged without weights because the published Total could not be used for every period. */
+  unweightedMean?: true;
 }
 
 /** Extra metadata on the two temporal chart types. */
@@ -152,6 +197,14 @@ interface TemporalMeta {
   periodStep?: number;
   /** When the period was built from a year column + a separate "Month" column, the month column's name. */
   temporalMonthField?: string;
+  /** Why `headline` is null for a multi-series chart (see HeadlineWithheld); absent when there is a headline. */
+  headlineWithheld?: HeadlineWithheld;
+  /** Periods (ascending, at most the last 12) whose rows carried a provisional marker such as "2024*". */
+  provisionalPeriods?: string[];
+  /** Rows left out because their period could not be read (only counted when they had a value); absent when 0. */
+  droppedPeriodRows?: number;
+  /** Provisional rows left out because the same period also had final rows; absent when 0. */
+  supersededProvisionalRows?: number;
 }
 
 export type VizConfig =
@@ -183,6 +236,8 @@ export type VizConfig =
       seriesOverflow: boolean;
       /** The one series that is the total of the others (kept as its own line, never summed with its parts); null/absent when none or ambiguous. */
       totalKey?: string | null;
+      /** Series values that collided with a reserved chart key (period, __proto__, "...__partial") and were renamed in `seriesValues` and every row. */
+      seriesKeyEscapes?: Array<{ from: string; to: string }>;
     } & VizMeta &
       TemporalMeta)
   | ({
@@ -196,6 +251,8 @@ export type VizConfig =
       aggregate: Aggregate;
       categoryCount: number;
       otherBucketed: boolean;
+      /** The synthetic bucket's label when it is not the default "أخرى" (a real category already uses that name). */
+      otherLabel?: string;
     } & VizMeta)
   | ({
       type: "bar-stacked";
@@ -215,6 +272,10 @@ export type VizConfig =
       stacked?: boolean;
       /** True when seriesValues ends with the aggregated "أخرى" series holding the dropped ones, so stack heights stay complete. */
       otherSeriesBucketed?: boolean;
+      /** The label of the synthetic "rest" series and "rest" x-row when it is not the default "أخرى" (a real value already uses that name). */
+      otherLabel?: string;
+      /** Series values that collided with the reserved "category" / __proto__ key and were renamed in `seriesValues` and every row. */
+      seriesKeyEscapes?: Array<{ from: string; to: string }>;
     } & VizMeta)
   | ({
       type: "histogram";
@@ -289,6 +350,9 @@ const MEDIAN_SAMPLE_CAP = 10_000;
 const MAX_TOTAL_VALUES_PER_FIELD = 5;
 const MAX_HIDDEN_DIMENSION_LABELS = 8;
 const HISTOGRAM_BIN_COUNT = 10;
+const MAX_PROVISIONAL_PERIODS = 12;
+/** The twin key the chart draws a partial trailing period with (see PARTIAL_SUFFIX in src/lib/chart-model.ts). */
+const PARTIAL_KEY_SUFFIX = "__partial";
 
 /** Numbers stored as text: "1234", "1,234.5", "-3". Leading zeros are fine (identifiers). */
 const NUMERIC_LIKE_RE = /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/;
@@ -437,6 +501,8 @@ interface Accum {
   freq: Map<string, number>; // only populated for type === "text"
   /** Text fields: distinct values that are exactly "Total"/"الإجمالي" (strict tier), capped; tracked even past the distinct cap. */
   totalValues: Set<string>;
+  /** Text fields: distinct values that MAY be a total ("Total (all)", "All", "Kingdom of Bahrain"), capped; accepted only after a numeric check. */
+  candidateValues: Set<string>;
 
   numSum: number;
   numSumSq: number;
@@ -471,6 +537,8 @@ interface Accum {
   temporalMaxRaw: string | null;
   temporalYearOnly: boolean;
   temporalParsed: number;
+  /** How many parsed values carried a provisional marker ("2024*"). */
+  temporalProvisional: number;
 
   // Sampled parse-rate check for text/int fields whose name/label looks
   // temporal (classification rule 3, second bullet).
@@ -497,6 +565,7 @@ function newAccum(field: CatalogField): Accum {
     distinctCapped: false,
     freq: new Map(),
     totalValues: new Set(),
+    candidateValues: new Set(),
     numSum: 0,
     numSumSq: 0,
     numCount: 0,
@@ -519,6 +588,7 @@ function newAccum(field: CatalogField): Accum {
     temporalMaxRaw: null,
     temporalYearOnly: true,
     temporalParsed: 0,
+    temporalProvisional: 0,
     sampleAttempts: 0,
     sampleOk: 0,
     monthPartAttempts: 0,
@@ -565,12 +635,12 @@ function buildAccumulators(
             acc.distinctCapped = true;
           } else {
             acc.distinct.add(key);
-            if (
-              acc.type === "text" &&
-              acc.totalValues.size < MAX_TOTAL_VALUES_PER_FIELD &&
-              isStrictTotalLabel(key)
-            ) {
-              acc.totalValues.add(key);
+            if (acc.type === "text") {
+              if (acc.totalValues.size < MAX_TOTAL_VALUES_PER_FIELD && isStrictTotalLabel(key)) {
+                acc.totalValues.add(key);
+              } else if (acc.candidateValues.size < MAX_TOTAL_VALUES_PER_FIELD && isTotalCandidateLabel(key)) {
+                acc.candidateValues.add(key);
+              }
             }
           }
         }
@@ -652,6 +722,7 @@ function buildAccumulators(
             acc.temporalMaxRaw = String(raw);
           }
           acc.temporalParsed++;
+          if (parsed.provisional) acc.temporalProvisional++;
           if (parsed.month !== null) acc.temporalYearOnly = false;
         }
       }
@@ -671,7 +742,8 @@ function buildAccumulators(
 // ---------------------------------------------------------------------------
 
 function buildStatsJson(accumList: Accum[]): StatsJson {
-  const out: StatsJson = {};
+  // Built from entries so a field literally named "__proto__" becomes an own key (`out[name] = ...` would set the prototype and drop it).
+  const entries: Array<[string, FieldStats]> = [];
   for (const acc of accumList) {
     const nullRate = acc.total > 0 ? roundTo((acc.total - acc.nonNull) / acc.total, 4) : 0;
     const distinctCount: number | "1000+" = acc.distinctCapped ? "1000+" : acc.distinct.size;
@@ -720,15 +792,18 @@ function buildStatsJson(accumList: Accum[]): StatsJson {
       if (
         (acc.rowIndexCandidate && acc.numCount >= 5) ||
         looksLikeIdentifierName(acc.name) ||
-        looksLikeIdentifierName(acc.label)
+        looksLikeIdentifierName(acc.label) ||
+        // the same predicate that keeps these columns out of the chart measure (Building, Road, Block, Phone ...)
+        isIdentifierLikeName(acc.name) ||
+        isIdentifierLikeName(acc.label)
       ) {
         stat.looksLikeIdentifier = true;
       }
     }
 
-    out[acc.name] = stat;
+    entries.push([acc.name, stat]);
   }
-  return out;
+  return Object.fromEntries(entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +880,11 @@ function classifyFields(accumList: Accum[]): Classification {
     const isRowIndex =
       (acc.rowIndexCandidate && acc.numCount >= 5) || GENERIC_INDEX_NAME_RE.test(acc.name);
     const isCoordinate = COORDINATE_RE.test(acc.name) || COORDINATE_RE.test(acc.label);
-    if (isNumeric && !MEASURE_EXCLUDE_RE.test(acc.name) && !isRowIndex && !isCoordinate) {
+    // A whole-label identifier / address part ("Phone", "Building", "Road No", "License Number") holding integers is a
+    // name, not a quantity: summing building numbers produced "Northern بقيمة 22,100". A viz override can still pin it.
+    const isIdentifierMeasure =
+      acc.numAllInt && (isIdentifierLikeName(acc.name) || isIdentifierLikeName(acc.label));
+    if (isNumeric && !MEASURE_EXCLUDE_RE.test(acc.name) && !isRowIndex && !isCoordinate && !isIdentifierMeasure) {
       measure.push(cf);
       continue;
     }
@@ -837,16 +916,78 @@ function measureSpread(acc: Accum): number {
   return denom > 0 ? std / denom : 0;
 }
 
-/** "best" measure = highest non-null count with non-constant values (spec's area-chart rule, reused everywhere a single measure must be picked); ties go to the more spread-out column, then schema order. */
-function pickBestMeasure(measures: ClassifiedField[]): ClassifiedField | null {
+/** An additive measure whose spread is below this is "nearly flat" (a population that moves 0.05%): not worth plotting over a column that varies. */
+const INFORMATIVE_SPREAD = 0.02;
+
+function isTotalNamed(m: ClassifiedField): boolean {
+  return [m.name, m.label].some((t) => isStrictTotalLabel(t) || isLooseTotalLabel(t));
+}
+
+function meanMagnitude(acc: Accum): number {
+  return acc.numCount > 0 ? Math.abs(acc.numSum / acc.numCount) : 0;
+}
+
+/** First best by `score`; ties keep schema order (the pool is in schema order). */
+function bestBy<T>(items: T[], score: (item: T) => number): T {
+  let best = items[0];
+  let bestScore = score(best);
+  for (let i = 1; i < items.length; i++) {
+    const sc = score(items[i]);
+    if (sc > bestScore) {
+      best = items[i];
+      bestScore = sc;
+    }
+  }
+  return best;
+}
+
+/**
+ * "best" measure = highest non-null count with non-constant values (spec's
+ * area-chart rule, reused everywhere a single measure must be picked). Columns
+ * that TIE on count are compared like with like:
+ *
+ *   1. grouped by (inferred aggregate, unit): a count and a percent are not
+ *      comparable, nor are persons and BHD;
+ *   2. inside an additive group the winner is the column named like a total
+ *      ("Total", "الإجمالي", a unique match only), else the one with the
+ *      largest magnitude: for non-negative additive columns the total is never
+ *      smaller than its parts, so a wide table's "Total" or "Kingdom" column
+ *      wins (the scale-free spread alone can only ever pick a component);
+ *   3. inside a rate/index group the more spread-out column wins;
+ *   4. across groups the additive representative wins if it actually varies,
+ *      otherwise the most spread-out representative does (a flat population
+ *      column does not beat a percent series).
+ *
+ * Schema order is the final tie-break.
+ */
+function pickBestMeasure(measures: ClassifiedField[], ctx: BuildContext): ClassifiedField | null {
   const withData = measures.filter((m) => m.accum.numCount > 0);
   if (withData.length === 0) return null;
   const nonConstant = withData.filter((m) => m.accum.numMin !== m.accum.numMax);
   const pool = nonConstant.length > 0 ? nonConstant : withData;
-  return [...pool].sort((a, b) => {
-    if (b.accum.numCount !== a.accum.numCount) return b.accum.numCount - a.accum.numCount;
-    return measureSpread(b.accum) - measureSpread(a.accum);
-  })[0];
+  const bestCount = pool.reduce((m, c) => Math.max(m, c.accum.numCount), 0);
+  const top = pool.filter((m) => m.accum.numCount === bestCount);
+  if (top.length === 1) return top[0];
+
+  const groups = new Map<string, { aggregate: Aggregate; members: ClassifiedField[] }>();
+  for (const m of top) {
+    const aggregate = aggregateKindFor(m, ctx);
+    const key = `${aggregate}\u0000${m.accum.unit ?? ""}`;
+    const g = groups.get(key);
+    if (g) g.members.push(m);
+    else groups.set(key, { aggregate, members: [m] });
+  }
+
+  const reps = [...groups.values()].map(({ aggregate, members }) => {
+    if (members.length === 1) return { aggregate, pick: members[0] };
+    if (aggregate === "mean") return { aggregate, pick: bestBy(members, (m) => measureSpread(m.accum)) };
+    const named = members.filter(isTotalNamed);
+    return { aggregate, pick: named.length === 1 ? named[0] : bestBy(members, (m) => meanMagnitude(m.accum)) };
+  });
+  if (reps.length === 1) return reps[0].pick;
+
+  const additive = reps.filter((r) => r.aggregate !== "mean" && measureSpread(r.pick.accum) >= INFORMATIVE_SPREAD);
+  return bestBy(additive.length > 0 ? additive : reps, (r) => measureSpread(r.pick.accum)).pick;
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +996,10 @@ function pickBestMeasure(measures: ClassifiedField[]): ClassifiedField | null {
 
 interface TotalField {
   name: string;
+  /** Strict totals ("Total", "الإجمالي"): dropped on a hidden dimension by label alone. */
   values: Set<string>;
+  /** Possible totals ("Total (all)", "All nationalities", "Kingdom of Bahrain"): dropped only after the numbers agree. */
+  candidates: Set<string>;
 }
 
 interface BuildContext {
@@ -863,8 +1007,12 @@ interface BuildContext {
   /** Memoizing temporal parser shared by every pass over this dataset's rows. */
   parseTemporal: (raw: unknown) => TemporalParts | null;
   override: VizOverride | undefined;
-  /** Text fields that carry a strict "Total" value next to non-total siblings. */
+  /** Text fields that carry a strict "Total" value or a total candidate next to non-total siblings. */
   totalFields: TotalField[];
+  /** The classified dimensions: the "other dimensions" a candidate total is compared with its siblings within. */
+  dimensions: DimensionField[];
+  /** Memoized numeric verification of total candidates, keyed by field | measure | period source. */
+  verified: Map<string, Set<string>>;
 }
 
 function aggregateKindFor(measure: ClassifiedField, ctx: BuildContext): Aggregate {
@@ -889,64 +1037,277 @@ function resolveMeasures(classification: Classification, accumList: Accum[], ctx
 function collectTotalFields(accumList: Accum[], temporalNames: ReadonlySet<string>): TotalField[] {
   const out: TotalField[] = [];
   for (const acc of accumList) {
-    if (acc.type !== "text" || acc.totalValues.size === 0 || temporalNames.has(acc.name)) continue;
+    if (acc.type !== "text" || temporalNames.has(acc.name)) continue;
+    const special = acc.totalValues.size + acc.candidateValues.size;
+    if (special === 0) continue;
     // Only a dimension that also has non-total siblings: a constant "Total" column has nothing to double count.
-    if (!acc.distinctCapped && acc.distinct.size <= acc.totalValues.size) continue;
-    out.push({ name: acc.name, values: acc.totalValues });
+    if (!acc.distinctCapped && acc.distinct.size <= special) continue;
+    out.push({ name: acc.name, values: acc.totalValues, candidates: acc.candidateValues });
   }
   return out;
 }
 
-interface RowGate {
-  /** True when the row is a "Total" row on a hidden dimension and must be left out. */
-  skip(row: Record<string, unknown>): boolean;
-  /** Distinct total values dropped so far (rows or plotted categories). */
-  dropped: Set<string>;
+/** A hidden dimension and the Total values that stand for "all of it". */
+interface GateField {
+  name: string;
+  values: ReadonlySet<string>;
 }
 
-function makeRowGate(totalFields: TotalField[], plotted: ReadonlySet<string>, enabled: boolean): RowGate {
-  const active = enabled ? totalFields.filter((f) => !plotted.has(f.name)) : [];
+interface RowGate {
+  /**
+   * "drop": Total rows on hidden dimensions are left out (parts are summed/averaged).
+   * "only": a mean (rate, index) keeps ONLY the rows that are the published Total on every hidden
+   * total-bearing dimension: the overall rate, not an unweighted mean of the sub-rates.
+   */
+  mode: "drop" | "only";
+  /** True when the row must be left out. */
+  skip(row: Record<string, unknown>): boolean;
+  /** Distinct total values dropped so far (hidden rows, plus plotted categories the builders add). */
+  dropped: Set<string>;
+  /** True once a hidden-dimension Total row was dropped. */
+  hiddenDropped: boolean;
+  /** "only" mode: the Total values that were used. */
+  used: Set<string>;
+  /** "only" mode: the hidden dimensions that stand at their Total (not "aggregated across"). */
+  fieldNames: ReadonlySet<string>;
+}
+
+function makeRowGate(active: GateField[], mode: "drop" | "only"): RowGate {
   const dropped = new Set<string>();
-  return {
+  const used = new Set<string>();
+  const gate: RowGate = {
+    mode,
     dropped,
+    used,
+    hiddenDropped: false,
+    fieldNames: new Set(mode === "only" ? active.map((f) => f.name) : []),
     skip(row) {
+      if (mode === "only") {
+        for (const f of active) {
+          const raw = row[f.name];
+          if (typeof raw !== "string" || !f.values.has(raw.trim())) return true;
+        }
+        for (const f of active) used.add((row[f.name] as string).trim());
+        return false;
+      }
       for (const f of active) {
         const raw = row[f.name];
         if (typeof raw !== "string") continue;
         const v = raw.trim();
         if (f.values.has(v)) {
           dropped.add(v);
+          gate.hiddenDropped = true;
           return true;
         }
       }
       return false;
     },
   };
+  return gate;
+}
+
+/** What a builder tells the totals machinery about the chart it is building. */
+interface TotalsSpec {
+  aggregate: Aggregate;
+  measure: ClassifiedField;
+  /** The chart cell a row feeds (period, period|series, category, x|series); null when the row cannot be charted. */
+  keyOf(row: Record<string, unknown>): string | null;
+  /** The period a row belongs to; undefined for charts without a time axis. */
+  periodOf?: (row: Record<string, unknown>) => string | null;
+  /** Identifies the period source for memoization. */
+  periodId?: string;
+  /** Skip the numeric verification of candidates (histogram: rows are not cells). */
+  noVerify?: boolean;
+}
+
+/** Cap on (period x other-dimension) cells the numeric check holds; beyond it nothing is verified (the safe answer). */
+const MAX_VERIFY_CELLS = 50_000;
+const MAX_VERIFY_DIMENSIONS = 6;
+
+/**
+ * Which candidate totals of hidden dimension `f` really are totals: in every
+ * (period x other dimensions) cell the candidate equals the sum of the other
+ * values of `f`, never less than the largest of them (series.ts totalCellsAgree).
+ * Label tiers only NOMINATE; this is what accepts. Skipped for means (a sum
+ * check is meaningless) and bailed out on negative values or too many cells.
+ */
+function verifyTotalCandidates(
+  ctx: BuildContext,
+  records: Record<string, unknown>[],
+  f: TotalField,
+  spec: TotalsSpec,
+): Set<string> {
+  const none = new Set<string>();
+  if (spec.aggregate === "mean" || spec.noVerify || f.candidates.size < 1) return none;
+  const memoKey = `${f.name}\u0000${spec.measure.name}\u0000${spec.periodId ?? ""}`;
+  const memo = ctx.verified.get(memoKey);
+  if (memo) return memo;
+
+  // Other dimensions identify "the same cell", except a bilingual twin of `f` (it differs on every sibling).
+  const cellDims = ctx.dimensions
+    .filter((d) => d.name !== f.name && !isRedundantDimensionPair(records, f.name, d.name))
+    .slice(0, MAX_VERIFY_DIMENSIONS);
+
+  interface VCell {
+    cand: Map<string, number>;
+    siblings: number;
+    siblingCount: number;
+    maxSibling: number;
+    allIntegers: boolean;
+  }
+  const cells = new Map<string, VCell>();
+  let aborted = false;
+  for (const row of records) {
+    const raw = row[f.name];
+    if (typeof raw !== "string") continue;
+    const v = raw.trim();
+    if (v === "" || f.values.has(v)) continue; // strict totals are dropped anyway: not parts
+    const val = toNumber(row[spec.measure.name]);
+    if (val === null) continue;
+    if (val < 0) {
+      aborted = true;
+      break;
+    }
+    const period = spec.periodOf ? spec.periodOf(row) : "";
+    if (period === null) continue;
+    let key = period;
+    for (const d of cellDims) key += `\u0000${toDisplayString(row[d.name]) ?? ""}`;
+    let cell = cells.get(key);
+    if (!cell) {
+      if (cells.size >= MAX_VERIFY_CELLS) {
+        aborted = true;
+        break;
+      }
+      cell = { cand: new Map(), siblings: 0, siblingCount: 0, maxSibling: 0, allIntegers: true };
+      cells.set(key, cell);
+    }
+    if (f.candidates.has(v)) {
+      cell.cand.set(v, (cell.cand.get(v) ?? 0) + val);
+    } else {
+      cell.siblings += val;
+      cell.siblingCount++;
+      if (val > cell.maxSibling) cell.maxSibling = val;
+      if (!Number.isInteger(val)) cell.allIntegers = false;
+    }
+  }
+
+  const ok = new Set<string>();
+  if (!aborted) {
+    for (const cand of f.candidates) {
+      const evidence: TotalCell[] = [];
+      for (const c of cells.values()) {
+        const candidate = c.cand.get(cand);
+        if (candidate === undefined) continue;
+        evidence.push({
+          candidate,
+          siblings: c.siblings,
+          maxSibling: c.maxSibling,
+          siblingCount: c.siblingCount,
+          allIntegers: c.allIntegers && Number.isInteger(candidate),
+        });
+      }
+      if (totalCellsAgree(evidence)) ok.add(cand);
+    }
+  }
+  ctx.verified.set(memoKey, ok);
+  return ok;
 }
 
 /**
- * Runs a builder with totals dropped; if that leaves the chart empty (a
- * table that ONLY has total rows) runs it once more keeping them. The
- * decision is whole-dataset on purpose: a per-period fallback would mix
- * total-only and parts-only periods in one line.
+ * For a MEAN measure (a rate, an index) the published Total on a hidden
+ * dimension IS the overall figure, and an unweighted mean of its parts is not
+ * (the mean of twelve age-group rates is not the national rate). The Total-only
+ * pass is used only when it is safe, decided ONCE for the whole dataset:
+ *   - every chart cell that has part rows also has a Total row (otherwise the
+ *     chart would silently shrink to the periods that have one);
+ *   - at least one cell has a Total on EVERY hidden total-bearing dimension;
+ *   - the Total is not simply the sum of its parts (a distribution of shares
+ *     that adds to 100 would flatten into a constant 100%).
+ */
+function totalOnlyUsable(records: Record<string, unknown>[], fields: GateField[], spec: TotalsSpec): boolean {
+  const parts = new Map<string, number>();
+  const totals = new Map<string, number>();
+  for (const row of records) {
+    const key = spec.keyOf(row);
+    if (key === null) continue;
+    const val = toNumber(row[spec.measure.name]);
+    if (val === null) continue;
+    let totalOn = 0;
+    for (const f of fields) {
+      const raw = row[f.name];
+      if (typeof raw === "string" && f.values.has(raw.trim())) totalOn++;
+    }
+    if (totalOn === fields.length) totals.set(key, (totals.get(key) ?? 0) + val);
+    else if (totalOn === 0) parts.set(key, (parts.get(key) ?? 0) + val);
+    // a mix (Total on one dimension, a part on another) belongs to neither pass
+  }
+  if (totals.size === 0) return false;
+  for (const key of parts.keys()) if (!totals.has(key)) return false;
+
+  let compared = 0;
+  let additive = 0;
+  for (const [key, partSum] of parts) {
+    const totalSum = totals.get(key)!;
+    compared++;
+    if (Math.abs(totalSum - partSum) <= 0.01 * Math.abs(totalSum)) additive++;
+  }
+  return !(compared > 0 && additive / compared >= 0.8);
+}
+
+/**
+ * Runs a builder with totals handled; if that leaves the chart empty (a table
+ * that ONLY has total rows) runs it once more keeping them. The decision is
+ * whole-dataset on purpose: a per-period fallback would mix total-only and
+ * parts-only periods in one line.
+ *
+ *   mean:    the published overall figure when the table has it for every cell
+ *            ("only" mode), else the parts (and the builder withholds the headline);
+ *   others:  strict Totals and numerically verified candidates are dropped.
  */
 function withTotalsFallback<T>(
   ctx: BuildContext,
+  records: Record<string, unknown>[],
   plotted: ReadonlySet<string>,
+  spec: TotalsSpec,
   attempt: (gate: RowGate, dropPlotted: boolean) => T | null,
 ): T | null {
-  const gate = makeRowGate(ctx.totalFields, plotted, true);
+  const hidden = ctx.totalFields.filter((f) => !plotted.has(f.name));
+
+  if (spec.aggregate === "mean") {
+    const strict = hidden.filter((f) => f.values.size > 0).map((f) => ({ name: f.name, values: f.values }));
+    if (strict.length > 0 && totalOnlyUsable(records, strict, spec)) {
+      const built = attempt(makeRowGate(strict, "only"), true);
+      if (built !== null) return built;
+    }
+  }
+
+  const active: GateField[] = [];
+  for (const f of hidden) {
+    const values = new Set(f.values);
+    for (const c of verifyTotalCandidates(ctx, records, f, spec)) values.add(c);
+    if (values.size > 0) active.push({ name: f.name, values });
+  }
+  const gate = makeRowGate(active, "drop");
   const first = attempt(gate, true);
   if (first !== null || gate.dropped.size === 0) return first;
-  return attempt(makeRowGate(ctx.totalFields, plotted, false), false);
+  return attempt(makeRowGate([], "drop"), false);
 }
 
-function metaFrom(gate: RowGate, classification: Classification, plotted: ReadonlySet<string>): VizMeta {
-  const hidden = classification.dimension.filter((d) => !plotted.has(d.name)).map((d) => d.label);
+function metaFrom(
+  gate: RowGate,
+  classification: Classification,
+  plotted: ReadonlySet<string>,
+  aggregate: Aggregate,
+): VizMeta {
+  const hidden = classification.dimension
+    .filter((d) => !plotted.has(d.name) && !gate.fieldNames.has(d.name))
+    .map((d) => d.label);
   const meta: VizMeta = {};
   const uniqueHidden = [...new Set(hidden)].slice(0, MAX_HIDDEN_DIMENSION_LABELS);
   if (uniqueHidden.length > 0) meta.hiddenDimensions = uniqueHidden;
   if (gate.dropped.size > 0) meta.excludedTotals = [...gate.dropped].sort();
+  if (gate.used.size > 0) meta.usedTotals = [...gate.used].sort();
+  if (aggregate === "mean" && gate.mode === "drop" && gate.hiddenDropped) meta.unweightedMean = true;
   return meta;
 }
 
@@ -1019,6 +1380,8 @@ interface TemporalSource {
   /** Every field the period is built from (excluded from "hidden dimensions"). */
   fieldNames: string[];
   monthField?: ClassifiedField;
+  /** Some values of the period field carry a provisional marker ("2024*"). */
+  hasProvisional: boolean;
   read(row: Record<string, unknown>): TemporalParts | null;
 }
 
@@ -1033,6 +1396,7 @@ function temporalSourceFor(
 ): TemporalSource {
   const grain = grainFor(primary);
   const monthField = grain === "year" ? monthParts[0] : undefined;
+  const hasProvisional = primary.accum.temporalProvisional > 0;
   if (monthField) {
     return {
       name: primary.name,
@@ -1040,12 +1404,15 @@ function temporalSourceFor(
       grain: "month",
       fieldNames: [primary.name, monthField.name],
       monthField,
+      hasProvisional,
       read(row) {
         const y = parseTemporal(row[primary.name]);
         if (!y) return null;
         if (y.month !== null) return y; // the year column already carries a month: trust it
         const month = parseMonthPart(row[monthField.name]);
-        return month === null ? null : { year: y.year, month, day: null };
+        return month === null
+          ? null
+          : { year: y.year, month, day: null, ...(y.provisional ? { provisional: true as const } : {}) };
       },
     };
   }
@@ -1054,6 +1421,7 @@ function temporalSourceFor(
     label: primary.label,
     grain,
     fieldNames: [primary.name],
+    hasProvisional,
     read: (row) => parseTemporal(row[primary.name]),
   };
 }
@@ -1070,18 +1438,158 @@ function geoMeta(geo: ClassifiedField[]): GeoFieldMeta[] {
   return geo.map((g) => ({ name: g.name, label: g.label, type: g.accum.type }));
 }
 
+/** Bookkeeping about the rows of a temporal chart that were NOT charted as given (never silent). */
+interface PeriodAudit {
+  provisional: Set<string>;
+  droppedPeriodRows: number;
+  supersededProvisionalRows: number;
+}
+
+function newPeriodAudit(): PeriodAudit {
+  return { provisional: new Set(), droppedPeriodRows: 0, supersededProvisionalRows: 0 };
+}
+
 function temporalMetaFor(
   temporal: TemporalSource,
   headline: Headline | null,
   lastPeriodPartial: boolean,
   step: number,
+  extra: { withheld: HeadlineWithheld | null; audit: PeriodAudit },
 ): TemporalMeta {
+  const provisional = [...extra.audit.provisional].sort().slice(-MAX_PROVISIONAL_PERIODS);
   return {
     headline,
     lastPeriodPartial,
     periodStep: step,
     ...(temporal.monthField ? { temporalMonthField: temporal.monthField.name } : {}),
+    ...(headline === null && extra.withheld ? { headlineWithheld: extra.withheld } : {}),
+    ...(provisional.length > 0 ? { provisionalPeriods: provisional } : {}),
+    ...(extra.audit.droppedPeriodRows > 0 ? { droppedPeriodRows: extra.audit.droppedPeriodRows } : {}),
+    ...(extra.audit.supersededProvisionalRows > 0
+      ? { supersededProvisionalRows: extra.audit.supersededProvisionalRows }
+      : {}),
   };
+}
+
+/** The headline, flagged provisional when its period's rows carried a marker, and the reason when there is none. */
+function finishHeadline(
+  src: HeadlineSource,
+  fullRows: ReadonlyArray<Record<string, unknown>>,
+  audit: PeriodAudit,
+  unweighted: boolean,
+): { headline: Headline | null; withheld: HeadlineWithheld | null } {
+  // A mean over parts whose published Total could not be used is an unweighted mean of sub-rates: not THE rate.
+  if (unweighted) return { headline: null, withheld: "unweighted-mean" };
+  const computed = computeHeadline(src, fullRows);
+  if (!computed) return { headline: null, withheld: headlineWithheldReason(src, fullRows) };
+  return {
+    headline: audit.provisional.has(computed.period) ? { ...computed, provisional: true } : computed,
+    withheld: null,
+  };
+}
+
+/**
+ * Keys (a period, or period + series) that have at least one FINAL row. A
+ * provisional row for the same key is superseded by it: merging "2024" and
+ * "2024*" into one period would count the same figure twice. Only run when the
+ * period column actually contains provisional values.
+ */
+function finalKeysOf(
+  records: Record<string, unknown>[],
+  gate: RowGate,
+  temporal: TemporalSource,
+  measureName: string,
+  seriesName?: string,
+): Set<string> {
+  const finals = new Set<string>();
+  for (const row of records) {
+    if (gate.skip(row)) continue;
+    if (toNumber(row[measureName]) === null) continue;
+    const parsed = temporal.read(row);
+    if (!parsed || parsed.provisional) continue;
+    const period = periodKeyFor(parsed, temporal.grain);
+    if (seriesName === undefined) {
+      finals.add(period);
+    } else {
+      const cat = toDisplayString(row[seriesName]);
+      if (cat !== null) finals.add(`${period}\u0000${cat}`);
+    }
+  }
+  return finals;
+}
+
+/** Row count and (month grain) the latest day seen, per period: what the completeness rules judge. */
+function coverageOf(period: string, cells: Iterable<Cell>, grain: Grain): PeriodCoverage {
+  let count = 0;
+  let maxDay = 0;
+  for (const c of cells) {
+    count += c.count;
+    if (grain === "month" && c.lastKey >= 0) maxDay = Math.max(maxDay, c.lastKey % 100);
+  }
+  return { period, count, ...(maxDay > 0 ? { maxDay } : {}) };
+}
+
+/** Is the last period incomplete? Honors a `lastPeriod` pin in viz-overrides; only sums are judged (a mean is not distorted by a short period). */
+function judgeLastPeriodPartial(ctx: BuildContext, aggregate: Aggregate, coverage: PeriodCoverage[]): boolean {
+  const pinned = ctx.override?.lastPeriod;
+  if (pinned === "complete") return false;
+  if (pinned === "partial") return coverage.length >= 2;
+  return aggregate === "sum" && isLastPeriodPartial(coverage);
+}
+
+/**
+ * Renames series values that would collide with a reserved row key. A chart
+ * row is `{ period | category, <series>: value }`, so a series called "period"
+ * would overwrite the x value, "__proto__" cannot be assigned at all, and
+ * "<k>__partial" is the twin key the chart draws a partial segment with.
+ * Deterministic (`«period»`, then trailing "_" until unique) and recorded in
+ * vizConfig, so the legend shows «period» instead of a broken chart.
+ */
+function planSeriesKeys(
+  names: readonly string[],
+  reserved: (name: string) => boolean,
+): { keyOf: (name: string) => string; escapes: Array<{ from: string; to: string }> } {
+  const taken = new Set(names);
+  const renamed = new Map<string, string>();
+  const escapes: Array<{ from: string; to: string }> = [];
+  for (const name of names) {
+    if (!reserved(name)) continue;
+    let to = `«${name}»`;
+    while (taken.has(to)) to += "_";
+    taken.add(to);
+    renamed.set(name, to);
+    escapes.push({ from: name, to });
+  }
+  return { keyOf: (name) => renamed.get(name) ?? name, escapes };
+}
+
+const reservedMultiLineKey = (k: string) => k === "period" || k === "__proto__" || k.endsWith(PARTIAL_KEY_SUFFIX);
+const reservedStackedKey = (k: string) => k === "category" || k === "__proto__";
+
+/** "أخرى", or "أخرى (البقية)" (then " 2", " 3" ...) when a real value already carries the name. */
+function uniqueOtherLabel(taken: ReadonlySet<string>): string {
+  if (!taken.has(OTHER_LABEL)) return OTHER_LABEL;
+  let label = `${OTHER_LABEL} (البقية)`;
+  for (let i = 2; taken.has(label); i++) label = `${OTHER_LABEL} (البقية) ${i}`;
+  return label;
+}
+
+/**
+ * A plotted category/series that is numerically the sum of the others. Only
+ * values the labels NOMINATE ("Kingdom of Bahrain", "All") are considered, and
+ * only for additive measures: label proposes, arithmetic disposes. `slots`
+ * are the rows the sum is checked in (one per series for x categories, one per
+ * x for series; a single one for a bar chart).
+ */
+function numericPlottedTotal(
+  names: readonly string[],
+  slots: ReadonlyArray<Record<string, unknown>>,
+  minCells: number,
+): string | null {
+  if (names.length < 3) return null;
+  const candidates = names.filter((n) => isTotalCandidateLabel(n));
+  if (candidates.length === 0) return null;
+  return findNumericTotalSeries(slots, names, { candidates, minCells });
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,20 +1609,37 @@ function buildArea(
   classification: Classification,
   geoFields: GeoFieldMeta[],
 ): Built | null {
-  const measure = pickBestMeasure(measures);
+  const measure = pickBestMeasure(measures, ctx);
   if (!measure) return null;
   const aggregate = aggregateKindFor(measure, ctx);
   const plotted = new Set([...temporal.fieldNames, measure.name]);
+  const periodOf = (row: Record<string, unknown>) => {
+    const p = temporal.read(row);
+    return p ? periodKeyFor(p, temporal.grain) : null;
+  };
+  const spec: TotalsSpec = { aggregate, measure, keyOf: periodOf, periodOf, periodId: `${temporal.name}|${temporal.grain}` };
 
-  return withTotalsFallback(ctx, plotted, (gate) => {
+  return withTotalsFallback(ctx, records, plotted, spec, (gate) => {
     const groups = new Map<string, Cell>();
+    const audit = newPeriodAudit();
+    const finals = temporal.hasProvisional ? finalKeysOf(records, gate, temporal, measure.name) : null;
     for (const row of records) {
       if (gate.skip(row)) continue;
-      const parsed = temporal.read(row);
-      if (!parsed) continue;
       const val = toNumber(row[measure.name]);
       if (val === null) continue;
+      const parsed = temporal.read(row);
+      if (!parsed) {
+        audit.droppedPeriodRows++;
+        continue;
+      }
       const period = periodKeyFor(parsed, temporal.grain);
+      if (parsed.provisional) {
+        if (finals?.has(period)) {
+          audit.supersededProvisionalRows++;
+          continue;
+        }
+        audit.provisional.add(period);
+      }
       let g = groups.get(period);
       if (!g) {
         g = newCell();
@@ -1127,14 +1652,18 @@ function buildArea(
     // Judge completeness and compute the headline on the FULL period list,
     // before gap filling and downsampling shrink or reshape it.
     const realPeriods = [...groups.keys()].sort();
-    const lastPeriodPartial =
-      aggregate === "sum" && detectPartialLastPeriod(realPeriods.map((p) => groups.get(p)!.count));
+    const lastPeriodPartial = judgeLastPeriodPartial(
+      ctx,
+      aggregate,
+      realPeriods.map((p) => coverageOf(p, [groups.get(p)!], temporal.grain)),
+    );
     const { periods: fullPeriods, step } = fillPeriodGaps(realPeriods, temporal.grain);
     const fullRows = fullPeriods.map((period) => {
       const g = groups.get(period);
       return { period, value: g ? roundTo(cellValue(g, aggregate), 4) : null };
     });
-    const headline = computeHeadline({ type: "area", aggregate, lastPeriodPartial }, fullRows);
+    const unweighted = aggregate === "mean" && gate.mode === "drop" && gate.hiddenDropped;
+    const { headline, withheld } = finishHeadline({ type: "area", aggregate, lastPeriodPartial }, fullRows, audit, unweighted);
     const chartData = downsampleEvenly(
       fullRows,
       MAX_CHART_POINTS,
@@ -1151,8 +1680,8 @@ function buildArea(
       measureLabel: measure.label,
       aggregate,
       ...(measure.accum.unit ? { unit: measure.accum.unit } : {}),
-      ...temporalMetaFor(temporal, headline, lastPeriodPartial, step),
-      ...metaFrom(gate, classification, plotted),
+      ...temporalMetaFor(temporal, headline, lastPeriodPartial, step, { withheld, audit }),
+      ...metaFrom(gate, classification, plotted, aggregate),
     };
     return { vizConfig, chartData };
   });
@@ -1167,24 +1696,50 @@ function buildMultiLine(
   classification: Classification,
   geoFields: GeoFieldMeta[],
 ): Built | null {
-  const measure = pickBestMeasure(measures);
+  const measure = pickBestMeasure(measures, ctx);
   if (!measure) return null;
   const aggregate = aggregateKindFor(measure, ctx);
   const plotted = new Set([...temporal.fieldNames, measure.name, seriesDim.name]);
+  const spec: TotalsSpec = {
+    aggregate,
+    measure,
+    keyOf: (row) => {
+      const p = temporal.read(row);
+      const cat = toDisplayString(row[seriesDim.name]);
+      return p && cat !== null ? `${periodKeyFor(p, temporal.grain)}\u0000${cat}` : null;
+    },
+    periodOf: (row) => {
+      const p = temporal.read(row);
+      return p ? periodKeyFor(p, temporal.grain) : null;
+    },
+    periodId: `${temporal.name}|${temporal.grain}`,
+  };
 
-  return withTotalsFallback(ctx, plotted, (gate) => {
+  return withTotalsFallback(ctx, records, plotted, spec, (gate) => {
     const periodSeries = new Map<string, Map<string, Cell>>();
     const seriesTotals = new Map<string, number>();
+    const audit = newPeriodAudit();
+    const finals = temporal.hasProvisional ? finalKeysOf(records, gate, temporal, measure.name, seriesDim.name) : null;
 
     for (const row of records) {
       if (gate.skip(row)) continue;
-      const parsed = temporal.read(row);
-      if (!parsed) continue;
       const cat = toDisplayString(row[seriesDim.name]);
       if (cat === null) continue;
       const val = toNumber(row[measure.name]);
       if (val === null) continue;
+      const parsed = temporal.read(row);
+      if (!parsed) {
+        audit.droppedPeriodRows++;
+        continue;
+      }
       const period = periodKeyFor(parsed, temporal.grain);
+      if (parsed.provisional) {
+        if (finals?.has(`${period}\u0000${cat}`)) {
+          audit.supersededProvisionalRows++;
+          continue;
+        }
+        audit.provisional.add(period);
+      }
       let byCat = periodSeries.get(period);
       if (!byCat) {
         byCat = new Map();
@@ -1204,37 +1759,55 @@ function buildMultiLine(
     // values ("Passengers Total" next to embark/disembark/...). It stays a
     // series of its own (first, so a legend can style it) and is recorded as
     // `totalKey` so nothing downstream ever adds it to its parts. Two or more
-    // total-looking values are ambiguous: no totalKey, no headline.
+    // total-looking values are ambiguous: no totalKey, no headline. A total
+    // the LABELS miss ("Kingdom of Bahrain" next to its governorates) is found
+    // by arithmetic on ALL series, before the cap trims the list.
     const ranked = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
-    const totalKey = findTotalSeries(ranked).key;
+    const realPeriods = [...periodSeries.keys()].sort();
+    const found = findTotalSeries(ranked);
+    let totalKey = found.key;
+    if (!totalKey && !found.ambiguous && aggregate !== "mean" && ranked.length >= 3) {
+      const matrix = realPeriods.map((p) => {
+        const row: Record<string, unknown> = Object.create(null);
+        for (const [cat, g] of periodSeries.get(p)!) row[cat] = roundTo(cellValue(g, aggregate), 4);
+        return row;
+      });
+      totalKey = findNumericTotalSeries(matrix, ranked);
+    }
     const parts = totalKey ? ranked.filter((k) => k !== totalKey) : ranked;
     const seriesOverflow = ranked.length > SERIES_CAP;
-    const seriesValues = totalKey ? [totalKey, ...parts.slice(0, SERIES_CAP - 1)] : parts.slice(0, SERIES_CAP);
+    const shown = totalKey ? [totalKey, ...parts.slice(0, SERIES_CAP - 1)] : parts.slice(0, SERIES_CAP);
+    const { keyOf, escapes } = planSeriesKeys(ranked, reservedMultiLineKey);
+    const seriesValues = shown.map(keyOf);
+    const totalKeyOut = totalKey ? keyOf(totalKey) : null;
 
     // Row coverage per period = rows across ALL series (including series the
     // cap trimmed), so a series appearing/disappearing is not mistaken for a
     // half-filled period.
-    const realPeriods = [...periodSeries.keys()].sort();
-    const counts = realPeriods.map((p) => {
-      let n = 0;
-      for (const g of periodSeries.get(p)!.values()) n += g.count;
-      return n;
-    });
-    const lastPeriodPartial = aggregate === "sum" && detectPartialLastPeriod(counts);
+    const coverage = realPeriods.map((p) => coverageOf(p, periodSeries.get(p)!.values(), temporal.grain));
+    const lastPeriodPartial = judgeLastPeriodPartial(ctx, aggregate, coverage);
     const { periods: fullPeriods, step } = fillPeriodGaps(realPeriods, temporal.grain);
     const fullRows = fullPeriods.map((period) => {
       const byCat = periodSeries.get(period);
       const row: Record<string, string | number | null> = { period };
-      for (const cat of seriesValues) {
+      for (const cat of shown) {
         const g = byCat?.get(cat);
-        row[cat] = g ? roundTo(cellValue(g, aggregate), 4) : null;
+        row[keyOf(cat)] = g ? roundTo(cellValue(g, aggregate), 4) : null;
       }
       return row;
     });
-    const headline = computeHeadline(
-      { type: "multi-line", aggregate, seriesValues, seriesOverflow, totalKey, lastPeriodPartial },
-      fullRows,
-    );
+    const unweighted = aggregate === "mean" && gate.mode === "drop" && gate.hiddenDropped;
+    const headlineSource: HeadlineSource = {
+      type: "multi-line",
+      aggregate,
+      seriesValues,
+      seriesOverflow,
+      totalKey: totalKeyOut,
+      seriesField: seriesDim.name,
+      seriesLabel: seriesDim.label,
+      lastPeriodPartial,
+    };
+    const { headline, withheld } = finishHeadline(headlineSource, fullRows, audit, unweighted);
     const chartData = downsampleEvenly(
       fullRows,
       MAX_CHART_POINTS,
@@ -1254,10 +1827,11 @@ function buildMultiLine(
       seriesLabel: seriesDim.label,
       seriesValues,
       seriesOverflow,
-      totalKey,
+      totalKey: totalKeyOut,
+      ...(escapes.length > 0 ? { seriesKeyEscapes: escapes } : {}),
       ...(measure.accum.unit ? { unit: measure.accum.unit } : {}),
-      ...temporalMetaFor(temporal, headline, lastPeriodPartial, step),
-      ...metaFrom(gate, classification, plotted),
+      ...temporalMetaFor(temporal, headline, lastPeriodPartial, step, { withheld, audit }),
+      ...metaFrom(gate, classification, plotted, aggregate),
     };
     return { vizConfig, chartData };
   });
@@ -1271,12 +1845,13 @@ function buildBarH(
   classification: Classification,
   geoFields: GeoFieldMeta[],
 ): Built | null {
-  const measure = pickBestMeasure(measures);
+  const measure = pickBestMeasure(measures, ctx);
   if (!measure) return null;
   const aggregate = aggregateKindFor(measure, ctx);
   const plotted = new Set([dim.name, measure.name]);
+  const spec: TotalsSpec = { aggregate, measure, keyOf: (row) => toDisplayString(row[dim.name]) };
 
-  return withTotalsFallback(ctx, plotted, (gate, dropPlotted) => {
+  return withTotalsFallback(ctx, records, plotted, spec, (gate, dropPlotted) => {
     const groups = new Map<string, Cell>();
     for (let i = 0; i < records.length; i++) {
       const row = records[i];
@@ -1294,9 +1869,16 @@ function buildBarH(
     }
     if (groups.size === 0) return null;
 
-    // A "Total" category would be the tallest bar and "top category".
+    // A "Total" category would be the tallest bar and "top category". A
+    // nominated one ("Kingdom of Bahrain") is dropped only if it IS the sum of the rest.
     if (dropPlotted) {
-      const totalCat = findTotalSeries([...groups.keys()]).key;
+      const names = [...groups.keys()];
+      let totalCat = findTotalSeries(names).key;
+      if (!totalCat && aggregate !== "mean") {
+        const row: Record<string, unknown> = Object.create(null);
+        for (const [cat, g] of groups) row[cat] = cellValue(g, aggregate);
+        totalCat = numericPlottedTotal(names, [row], 1);
+      }
       if (totalCat && groups.size > 1) {
         groups.delete(totalCat);
         gate.dropped.add(totalCat);
@@ -1313,6 +1895,7 @@ function buildBarH(
 
     const top = finalized.slice(0, BAR_TOP_N);
     const rest = finalized.slice(BAR_TOP_N);
+    const otherLabel = rest.length > 0 ? uniqueOtherLabel(new Set(top.map((r) => r.category))) : OTHER_LABEL;
 
     const chartData: Array<{ category: string; value: number }> = top.map((r) => ({
       category: r.category,
@@ -1323,7 +1906,7 @@ function buildBarH(
         rest.map((r) => r.cell),
         aggregate,
       );
-      chartData.push({ category: OTHER_LABEL, value: roundTo(restValue ?? 0, 4) });
+      chartData.push({ category: otherLabel, value: roundTo(restValue ?? 0, 4) });
     }
 
     const vizConfig: VizConfig = {
@@ -1336,8 +1919,9 @@ function buildBarH(
       aggregate,
       categoryCount: finalized.length,
       otherBucketed: rest.length > 0,
+      ...(rest.length > 0 && otherLabel !== OTHER_LABEL ? { otherLabel } : {}),
       ...(measure.accum.unit ? { unit: measure.accum.unit } : {}),
-      ...metaFrom(gate, classification, plotted),
+      ...metaFrom(gate, classification, plotted, aggregate),
     };
     return { vizConfig, chartData };
   });
@@ -1375,7 +1959,7 @@ function buildBarStacked(
   classification: Classification,
   geoFields: GeoFieldMeta[],
 ): Built | null {
-  const measure = pickBestMeasure(measures);
+  const measure = pickBestMeasure(measures, ctx);
   if (!measure) return null;
   const aggregate = aggregateKindFor(measure, ctx);
 
@@ -1399,8 +1983,17 @@ function buildBarStacked(
   const xd = xDim;
   const sd = seriesDim;
   const plotted = new Set([xd.name, sd.name, measure.name]);
+  const spec: TotalsSpec = {
+    aggregate,
+    measure,
+    keyOf: (row) => {
+      const x = toDisplayString(row[xd.name]);
+      const s = toDisplayString(row[sd.name]);
+      return x !== null && s !== null ? `${x}\u0000${s}` : null;
+    },
+  };
 
-  return withTotalsFallback(ctx, plotted, (gate, dropPlotted) => {
+  return withTotalsFallback(ctx, records, plotted, spec, (gate, dropPlotted) => {
     const cellMap = new Map<string, Map<string, Cell>>();
 
     for (let i = 0; i < records.length; i++) {
@@ -1427,11 +2020,38 @@ function buildBarStacked(
 
     // A "Total" x-category or series would be the tallest bar / stack and
     // double the stack height: leave it out, and say so in `excludedTotals`.
+    // A value only the labels NOMINATE ("Kingdom of Bahrain") goes only if the
+    // numbers say it is the sum of the others.
     if (dropPlotted) {
       const allSeries = new Set<string>();
       for (const bySeries of cellMap.values()) for (const s of bySeries.keys()) allSeries.add(s);
-      const xTotal = findTotalSeries([...cellMap.keys()]).key;
-      const sTotal = findTotalSeries([...allSeries]).key;
+      const xNames = [...cellMap.keys()];
+      const sNames = [...allSeries];
+      let xTotal = findTotalSeries(xNames).key;
+      let sTotal = findTotalSeries(sNames).key;
+      if (aggregate !== "mean") {
+        if (!xTotal && !findTotalSeries(xNames).ambiguous) {
+          // one slot per series: the value of every x category in that series
+          const slots = sNames.map((s) => {
+            const slot: Record<string, unknown> = Object.create(null);
+            for (const [x, bySeries] of cellMap) {
+              const g = bySeries.get(s);
+              if (g) slot[x] = cellValue(g, aggregate);
+            }
+            return slot;
+          });
+          xTotal = numericPlottedTotal(xNames, slots, 2);
+        }
+        if (!sTotal && !findTotalSeries(sNames).ambiguous) {
+          // one slot per x category: the value of every series in that category
+          const slots = xNames.map((x) => {
+            const slot: Record<string, unknown> = Object.create(null);
+            for (const [s, g] of cellMap.get(x)!) slot[s] = cellValue(g, aggregate);
+            return slot;
+          });
+          sTotal = numericPlottedTotal(sNames, slots, 2);
+        }
+      }
       if (xTotal && cellMap.size > 1) {
         cellMap.delete(xTotal);
         gate.dropped.add(xTotal);
@@ -1460,18 +2080,29 @@ function buildBarStacked(
 
     const rankedSeries = [...seriesRank.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
     const seriesOverflow = rankedSeries.length > SERIES_CAP;
-    // The dropped series are folded into one aggregated "أخرى" series instead
+    // The dropped series are folded into one aggregated "rest" series instead
     // of vanishing, which understated every stack height.
     const keptSeries = seriesOverflow ? rankedSeries.slice(0, SERIES_CAP - 1) : rankedSeries;
     const restSeries = seriesOverflow ? rankedSeries.slice(SERIES_CAP - 1) : [];
-    const seriesValues = seriesOverflow ? [...keptSeries, OTHER_LABEL] : keptSeries;
 
     const xValues = [...xRank.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
     const xTop = xValues.slice(0, BAR_TOP_N);
     const xRest = xValues.slice(BAR_TOP_N);
 
-    function cellsFor(xVals: string[], sVal: string): Cell[] {
-      const wanted = seriesOverflow && sVal === OTHER_LABEL ? restSeries : [sVal];
+    // Real series values that would clash with the row's own "category" key are renamed; the synthetic
+    // "rest" bucket (series and x-row share one label) never reuses a name a real value carries.
+    const { keyOf, escapes } = planSeriesKeys(rankedSeries, reservedStackedKey);
+    const needsOther = seriesOverflow || xRest.length > 0;
+    const otherLabel = needsOther
+      ? uniqueOtherLabel(new Set([...keptSeries.map(keyOf), ...xTop]))
+      : OTHER_LABEL;
+    const columns = [
+      ...keptSeries.map((name) => ({ key: keyOf(name), wanted: [name] })),
+      ...(seriesOverflow ? [{ key: otherLabel, wanted: restSeries }] : []),
+    ];
+    const seriesValues = columns.map((c) => c.key);
+
+    function cellsFor(xVals: string[], wanted: string[]): Cell[] {
       const out: Cell[] = [];
       for (const x of xVals) {
         const bySeries = cellMap.get(x);
@@ -1486,18 +2117,18 @@ function buildBarStacked(
 
     const chartData: Array<Record<string, string | number | null>> = xTop.map((xVal) => {
       const row: Record<string, string | number | null> = { category: xVal };
-      for (const sVal of seriesValues) {
-        const v = combinedValue(cellsFor([xVal], sVal), aggregate);
-        row[sVal] = v === null ? null : roundTo(v, 4);
+      for (const col of columns) {
+        const v = combinedValue(cellsFor([xVal], col.wanted), aggregate);
+        row[col.key] = v === null ? null : roundTo(v, 4);
       }
       return row;
     });
 
     if (xRest.length > 0) {
-      const row: Record<string, string | number | null> = { category: OTHER_LABEL };
-      for (const sVal of seriesValues) {
-        const v = combinedValue(cellsFor(xRest, sVal), aggregate);
-        row[sVal] = v === null ? null : roundTo(v, 4);
+      const row: Record<string, string | number | null> = { category: otherLabel };
+      for (const col of columns) {
+        const v = combinedValue(cellsFor(xRest, col.wanted), aggregate);
+        row[col.key] = v === null ? null : roundTo(v, 4);
       }
       chartData.push(row);
     }
@@ -1519,8 +2150,10 @@ function buildBarStacked(
       // were never additive: render those as grouped bars.
       stacked: aggregate !== "mean",
       ...(seriesOverflow ? { otherSeriesBucketed: true } : {}),
+      ...(needsOther && otherLabel !== OTHER_LABEL ? { otherLabel } : {}),
+      ...(escapes.length > 0 ? { seriesKeyEscapes: escapes } : {}),
       ...(measure.accum.unit ? { unit: measure.accum.unit } : {}),
-      ...metaFrom(gate, classification, plotted),
+      ...metaFrom(gate, classification, plotted, aggregate),
     };
     return { vizConfig, chartData };
   });
@@ -1559,11 +2192,13 @@ function buildHistogram(
   classification: Classification,
   geoFields: GeoFieldMeta[],
 ): Built | null {
-  const measure = pickBestMeasure(measures);
+  const measure = pickBestMeasure(measures, ctx);
   if (!measure) return null;
   const plotted = new Set([measure.name]);
+  // A histogram is over rows, not cells: Total rows are outliers to drop, and there is nothing to verify or weight.
+  const spec: TotalsSpec = { aggregate: "sum", measure, keyOf: () => null, noVerify: true };
 
-  return withTotalsFallback(ctx, plotted, (gate) => {
+  return withTotalsFallback(ctx, records, plotted, spec, (gate) => {
     const values: number[] = [];
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
@@ -1601,7 +2236,7 @@ function buildHistogram(
       min: roundTo(min, precision),
       max: roundTo(max, precision),
       ...(measure.accum.unit ? { unit: measure.accum.unit } : {}),
-      ...metaFrom(gate, classification, plotted),
+      ...metaFrom(gate, classification, plotted, "sum"),
     };
     return { vizConfig, chartData };
   });
@@ -1694,7 +2329,11 @@ function valueOfBarRow(row: Record<string, unknown>, vizConfig: VizConfig): numb
 }
 
 function buildFallbackSummary(rows: number, fieldCount: number): string {
-  return `تحتوي قاعدة البيانات على ${rows} سجلاً عبر ${fieldCount} حقلاً.`;
+  if (!(rows > 0)) return "لا تحتوي مجموعة البيانات على أي سجلات.";
+  // After "على" and "عبر" the dual takes its oblique form (سجلين / حقلين); see src/lib/arabic-count.ts.
+  const records = countPhrase(rows, NOUNS.record, { oblique: true });
+  if (!(fieldCount > 0)) return `تحتوي مجموعة البيانات على ${records}.`;
+  return `تحتوي مجموعة البيانات على ${records} عبر ${countPhrase(fieldCount, NOUNS.field, { oblique: true })}.`;
 }
 
 function buildSummaryAr(
@@ -1710,7 +2349,8 @@ function buildSummaryAr(
     const data = chartData as Record<string, unknown>[];
     // The persisted headline is THE number (same function the cards use);
     // `null` means it was deliberately withheld (ambiguous totals, a mean
-    // over several series), and the generic sentence is the honest answer.
+    // over several series, series that are different indicators), and the
+    // generic sentence is the honest answer.
     const headline = vizConfig.headline !== undefined ? vizConfig.headline : computeHeadline(vizConfig, data);
     if (!headline) return fallback;
     const lastRow = data[data.length - 1];
@@ -1726,7 +2366,10 @@ function buildSummaryAr(
   }
 
   if (vizConfig.type === "bar-h" || vizConfig.type === "bar-stacked") {
-    const data = (chartData as Record<string, unknown>[]).filter((r) => r.category !== OTHER_LABEL);
+    const all = chartData as Record<string, unknown>[];
+    // The synthetic "rest" row is always the LAST row: drop exactly that one, never by name
+    // (a real category may be called "أخرى" and can be the top one).
+    const data = vizConfig.otherBucketed ? all.slice(0, -1) : all;
     if (data.length === 0) return fallback;
     let top = data[0];
     let topValue = valueOfBarRow(top, vizConfig);
@@ -1741,11 +2384,71 @@ function buildSummaryAr(
 
     const noun = vizConfig.aggregate === "mean" ? "بمتوسط" : "بقيمة";
     let sentence = `الفئة الأعلى: «${top.category}» ${noun} ${formatSummaryNumber(topValue)}`;
-    if (vizConfig.type === "bar-h") sentence += ` من أصل ${vizConfig.categoryCount} فئة`;
+    if (vizConfig.type === "bar-h") {
+      sentence += ` من أصل ${countPhrase(vizConfig.categoryCount, NOUNS.category, { oblique: true })}`;
+    }
     return sentence + ".";
   }
 
   return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Input hygiene
+// ---------------------------------------------------------------------------
+
+const hasOwn = Object.prototype.hasOwnProperty;
+
+/**
+ * The records every pass reads: the input itself in the overwhelmingly common
+ * case (zero cost), otherwise a cleaned copy. Two things are repaired once, up
+ * front, instead of in the dozen places that read `row[name]`:
+ *  - rows that are not plain objects (null, numbers, arrays) are skipped and
+ *    counted in ONE warning (the ingest boundary already rejects them; this is
+ *    defense in depth, and the alternative was one bad row disabling all derivation);
+ *  - a field named like an Object.prototype member ("constructor", "toString",
+ *    "__proto__") would read the inherited function for a row that lacks it, so
+ *    rows are copied into prototype-less objects holding only their own values.
+ */
+function prepareRecords(
+  datasetId: string,
+  records: Record<string, unknown>[],
+  fields: CatalogField[],
+): Record<string, unknown>[] {
+  const isPlain = (r: unknown): r is Record<string, unknown> => r !== null && typeof r === "object" && !Array.isArray(r);
+  const names = fields.map((f) => f?.name).filter((n): n is string => typeof n === "string" && n !== "");
+  const protoNames = names.some((n) => n in Object.prototype);
+
+  let clean = true;
+  if (!protoNames) {
+    for (const r of records) {
+      if (!isPlain(r)) {
+        clean = false;
+        break;
+      }
+    }
+    if (clean) return records;
+  }
+
+  const out: Record<string, unknown>[] = [];
+  let skipped = 0;
+  for (const r of records) {
+    if (!isPlain(r)) {
+      skipped++;
+      continue;
+    }
+    if (!protoNames) {
+      out.push(r);
+      continue;
+    }
+    const copy: Record<string, unknown> = Object.create(null);
+    for (const n of names) if (hasOwn.call(r, n)) copy[n] = r[n];
+    out.push(copy);
+  }
+  if (skipped > 0) {
+    console.warn(`[derived] ${datasetId}: ${skipped} record(s) are not objects and were skipped.`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1758,18 +2461,20 @@ export async function computeDerivedFields(
   fields: CatalogField[],
   options: ComputeDerivedOptions = {},
 ): Promise<DerivedFields> {
+  const inputRows = Array.isArray(records) ? records.length : 0;
   try {
     if (!Array.isArray(fields) || fields.length === 0) {
       return {
         statsJson: null,
         vizConfig: null,
         chartData: null,
-        summaryAr: buildFallbackSummary(records.length, 0),
+        summaryAr: buildFallbackSummary(inputRows, 0),
       };
     }
 
+    const rows = prepareRecords(datasetId, Array.isArray(records) ? records : [], fields);
     const parseTemporal = createTemporalParser();
-    const accumList = buildAccumulators(fields, records, parseTemporal);
+    const accumList = buildAccumulators(fields, rows, parseTemporal);
     const statsJson = buildStatsJson(accumList);
     const classification = classifyFields(accumList);
 
@@ -1779,11 +2484,13 @@ export async function computeDerivedFields(
       parseTemporal,
       override,
       totalFields: collectTotalFields(accumList, new Set(classification.temporal.map((t) => t.name))),
+      dimensions: classification.dimension,
+      verified: new Map(),
     };
     const measures = resolveMeasures(classification, accumList, ctx);
 
-    const { vizConfig, chartData } = buildVizConfig(ctx, records, classification, measures);
-    const summaryAr = buildSummaryAr(vizConfig, chartData, records.length, fields.length);
+    const { vizConfig, chartData } = buildVizConfig(ctx, rows, classification, measures);
+    const summaryAr = buildSummaryAr(vizConfig, chartData, rows.length, fields.length);
 
     return { statsJson, vizConfig, chartData, summaryAr };
   } catch (err) {
@@ -1794,7 +2501,7 @@ export async function computeDerivedFields(
       statsJson: null,
       vizConfig: null,
       chartData: null,
-      summaryAr: buildFallbackSummary(records.length, fields?.length ?? 0),
+      summaryAr: buildFallbackSummary(inputRows, Array.isArray(fields) ? fields.length : 0),
     };
   }
 }
