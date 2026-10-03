@@ -223,11 +223,32 @@ describe("inferUnitFromLabel", () => {
     ["Unemployment %", "%"],
     ["القيمة بالدينار البحريني", "بالدينار البحريني"],
     ["Area (km2) ", "km2"],
+    ["Area (km²)", "km²"],
+    ["Passengers (thousands)", "thousands"],
+    ["Imports (BD thousand)", "BD thousand"],
+    ["Deaths (per 1000)", "per 1000"],
+    ["Rate (BHD per capita)", "BHD per capita"],
+    ["المساحة (كم مربع)", "كم مربع"],
   ])("%j -> %j", (label, unit) => {
     expect(inferUnitFromLabel(label)).toBe(unit);
   });
 
-  it.each(["Year (2020)", "Total (Total)", "Value", "", "Passengers (Arabic)", "Name (n)"])("no unit in %j", (label) => {
+  // A trailing parenthetical is often a QUALIFIER of the measure, not its unit; printing it after a value
+  // ("1,200 Public") would be wrong, so only unit vocabulary is accepted.
+  it.each([
+    "Year (2020)",
+    "Total (Total)",
+    "Value",
+    "",
+    "Passengers (Arabic)",
+    "Name (n)",
+    "Students (Public)",
+    "Schools (Government)",
+    "Population (2020 census)",
+    "Value (provisional)",
+    "Count (Bahrainis)",
+    "العدد (حكومي)",
+  ])("no unit in %j", (label) => {
     expect(inferUnitFromLabel(label)).toBeNull();
   });
   it("null/undefined", () => {

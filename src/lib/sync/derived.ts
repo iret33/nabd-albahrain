@@ -351,16 +351,27 @@ function clampIndex(i: number, max: number): number {
   return i;
 }
 
-/** Evenly downsample to at most maxPoints, preserving order and the first/last item. */
-function downsampleEvenly<T>(items: T[], maxPoints: number): T[] {
+/**
+ * Evenly downsample to at most maxPoints, preserving order and the first/last
+ * item. `keepIndex` forces one more item to survive (the headline's period
+ * when the last, partial period is not the headline) by swapping it for the
+ * nearest sampled item, so the chart still contains the number it is quoting
+ * without exceeding maxPoints.
+ */
+function downsampleEvenly<T>(items: T[], maxPoints: number, keepIndex = -1): T[] {
   if (items.length <= maxPoints || maxPoints <= 1) return items.slice(0, maxPoints);
-  const out: T[] = [];
   const n = items.length;
-  for (let i = 0; i < maxPoints; i++) {
-    const idx = Math.floor((i * (n - 1)) / (maxPoints - 1));
-    out.push(items[idx]);
+  const picked: number[] = [];
+  for (let i = 0; i < maxPoints; i++) picked.push(Math.floor((i * (n - 1)) / (maxPoints - 1)));
+  if (keepIndex > 0 && keepIndex < n - 1 && !picked.includes(keepIndex)) {
+    let nearest = 1;
+    for (let i = 1; i < picked.length - 1; i++) {
+      if (Math.abs(picked[i] - keepIndex) < Math.abs(picked[nearest] - keepIndex)) nearest = i;
+    }
+    picked[nearest] = keepIndex;
+    picked.sort((a, b) => a - b);
   }
-  return out;
+  return picked.map((i) => items[i]);
 }
 
 function hashSeed(input: string): number {
@@ -1124,7 +1135,11 @@ function buildArea(
       return { period, value: g ? roundTo(cellValue(g, aggregate), 4) : null };
     });
     const headline = computeHeadline({ type: "area", aggregate, lastPeriodPartial }, fullRows);
-    const chartData = downsampleEvenly(fullRows, MAX_CHART_POINTS);
+    const chartData = downsampleEvenly(
+      fullRows,
+      MAX_CHART_POINTS,
+      headline ? fullRows.findIndex((r) => r.period === headline.period) : -1,
+    );
 
     const vizConfig: VizConfig = {
       type: "area",
@@ -1220,7 +1235,11 @@ function buildMultiLine(
       { type: "multi-line", aggregate, seriesValues, seriesOverflow, totalKey, lastPeriodPartial },
       fullRows,
     );
-    const chartData = downsampleEvenly(fullRows, MAX_CHART_POINTS);
+    const chartData = downsampleEvenly(
+      fullRows,
+      MAX_CHART_POINTS,
+      headline ? fullRows.findIndex((r) => r.period === headline.period) : -1,
+    );
 
     const vizConfig: VizConfig = {
       type: "multi-line",

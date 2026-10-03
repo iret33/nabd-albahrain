@@ -209,8 +209,52 @@ export function inferAggregate(input: {
 }
 
 /**
+ * Words that make a label's trailing parenthetical a UNIT rather than a
+ * qualifier. "(Public)", "(Total)" or "(2020 census)" qualify the measure and
+ * must never be printed after its value ("1,200 Public"), so only a
+ * parenthetical made entirely of these words (and numbers, as in "per 1000")
+ * is accepted.
+ */
+const UNIT_WORDS = new Set([
+  // currencies and money scales
+  "bd", "bhd", "usd", "sar", "aed", "kwd", "eur", "gbp", "dollar", "dollars", "dinar", "dinars",
+  "thousand", "thousands", "million", "millions", "billion", "billions", "mn", "bn", "k",
+  // length, area, volume, mass, energy, containers
+  "km", "km2", "m", "m2", "m3", "cm", "mm", "ha", "hectare", "hectares", "sqm", "sqkm",
+  "kg", "g", "mg", "t", "ton", "tons", "tonne", "tonnes", "l", "litre", "litres", "liter", "liters",
+  "mw", "kw", "mwh", "kwh", "gwh", "mcm", "bbl", "barrel", "barrels", "teu",
+  // counts and time
+  "person", "persons", "people", "unit", "units", "household", "households", "case", "cases",
+  "day", "days", "hour", "hours", "minute", "minutes", "week", "weeks", "month", "months", "year", "years",
+  // ratios
+  "percent", "percentage", "pct", "per", "capita", "cent", "of", "in", "points", "point",
+  // Arabic
+  "دينار", "بحريني", "طن", "كم", "كيلومتر", "متر", "مربع", "مكعب", "هكتار", "ألف", "الف", "مليون", "مليار",
+  "شخص", "نسمة", "وحدة", "يوم", "ساعة", "شهر", "سنة", "لتر", "كيلوغرام", "كجم", "برميل", "حاوية", "مئوية",
+]);
+
+function isUnitText(candidate: string): boolean {
+  if (/[%٪]/.test(candidate)) return true;
+  const tokens = candidate
+    .replace(/²/g, "2")
+    .replace(/³/g, "3")
+    .toLowerCase()
+    .split(/[^a-z0-9\u0600-\u06FF]+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  let words = 0;
+  for (const t of tokens) {
+    if (/^\d+$/.test(t)) continue; // "per 1000"
+    if (!UNIT_WORDS.has(t)) return false;
+    words++;
+  }
+  return words > 0;
+}
+
+/**
  * Fallback unit extraction for sources that carry no `annotations.unit`:
- * a trailing "(km2)" / "[BHD]" / "(%)" in the label, an Arabic "بالـ…"
+ * a trailing "(km2)" / "[BHD]" / "(%)" in the label whose content is made of
+ * unit words (never a qualifier such as "(Public)"), an Arabic "بالـ…"
  * phrase, or a bare "%". Returns null when nothing unit-like is found.
  */
 export function inferUnitFromLabel(label: string | null | undefined): string | null {
@@ -219,10 +263,9 @@ export function inferUnitFromLabel(label: string | null | undefined): string | n
   const paren = text.match(/[([]\s*([^()[\]]{1,24}?)\s*[)\]]\s*$/);
   if (paren) {
     const candidate = paren[1].trim();
-    const notAUnit = /^\d{1,4}$/.test(candidate) || /^(total|sum|avg|average|mean|count|number|no|n|ar|en|arabic|english)$/i.test(candidate);
-    if (candidate && !notAUnit) return candidate;
+    if (candidate && isUnitText(candidate)) return candidate;
   }
-  const arabic = text.match(/\s(بال[؀-ۿ]+(?:\s[؀-ۿ]+)?)\s*$/);
+  const arabic = text.match(/\s(بال[\u0600-\u06FF]+(?:\s[\u0600-\u06FF]+)?)\s*$/);
   if (arabic) return arabic[1].trim();
   if (/[%٪]/.test(text)) return "%";
   return null;

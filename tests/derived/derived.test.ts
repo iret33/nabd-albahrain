@@ -455,6 +455,11 @@ describe("partial trailing period", () => {
     expect(rows.length).toBeLessThanOrEqual(500);
     expect(rows[rows.length - 1]).toMatchObject({ period: "2018-12" });
     expect(viz.lastPeriodPartial).toBe(true);
+    // the headline is the last COMPLETE month; downsampling must not drop the row the sentence quotes
+    expect(viz.headline?.period).toBe("2018-11");
+    expect(rows.some((r) => r.period === "2018-11")).toBe(true);
+    expect(rows.length).toBe(500);
+    expect(rows.map((r) => r.period)).toEqual([...rows.map((r) => r.period)].sort());
   });
 });
 
