@@ -22,8 +22,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { NumberLatin } from "@/components/number-latin";
+import { countPhrase, type NounForms } from "@/lib/arabic-count";
 import { formatDateTimeAr, formatNumber, formatRelativeAr } from "@/lib/format";
 import type { AdminDatasetRow, AdminFreshness, AdminStats, AdminSyncLogRow } from "@/lib/admin/queries";
 import {
@@ -31,6 +33,7 @@ import {
   SYNC_RUN_STATUS_LABEL,
   describeScope,
   describeTrigger,
+  isQuietPublicPress,
   lastRunAlert,
   resolveSyncRunStatus,
   type SyncRunStatus,
@@ -147,18 +150,34 @@ interface TriggerOptions {
   recompute?: boolean;
 }
 
+/** "ضغطة" (a press of the public refresh button), for countPhrase. */
+const PRESS: NounForms = {
+  one: "ضغطة",
+  oneNumber: "واحدة",
+  dual: "ضغطتان",
+  dualOblique: "ضغطتين",
+  few: "ضغطات",
+  many: "ضغطةً",
+};
+
 export function AdminDashboard({
   stats,
   freshness,
   failures,
   logs,
+  showAllRuns,
+  quietPublicPresses,
   datasets,
   initialLock,
 }: {
   stats: AdminStats;
   freshness: AdminFreshness;
   failures: AdminDatasetRow[];
+  /** Newest runs; no-op public presses are already left out unless `showAllRuns`. */
   logs: AdminSyncLogRow[];
+  showAllRuns: boolean;
+  /** How many no-op public presses exist in total (what the default view hides). */
+  quietPublicPresses: number;
   datasets: AdminDatasetRow[];
   initialLock: LockState;
 }) {
@@ -190,7 +209,7 @@ export function AdminDashboard({
         stopPolling();
         setPending(null);
         setLockRunning(false);
-        router.replace("/admin/login");
+        router.replace("/admin/login?error=session");
         return;
       }
       if (!res.ok) return;
@@ -256,7 +275,7 @@ export function AdminDashboard({
         } else if (res.status === 401) {
           setBanner({ kind: "error", text: "انتهت الجلسة. سجّل الدخول من جديد." });
           setPending(null);
-          router.replace("/admin/login");
+          router.replace("/admin/login?error=session");
           return;
         } else if (res.status === 429) {
           setBanner({ kind: "error", text: "طلبات كثيرة خلال وقت قصير. انتظر قليلًا ثم حاول مرة أخرى." });
@@ -492,12 +511,30 @@ export function AdminDashboard({
         )}
       </section>
 
-      {/* Last 20 SyncLog rows */}
+      {/* Last 20 SyncLog rows (no-op public presses hidden unless asked for) */}
       <section>
-        <h2 className="font-display text-lg font-bold text-sea-900">سجل آخر عمليات المزامنة</h2>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <h2 className="font-display text-lg font-bold text-sea-900">سجل آخر عمليات المزامنة</h2>
+          {(showAllRuns || quietPublicPresses > 0) && (
+            <Link
+              href={showAllRuns ? "/admin" : "/admin?runs=all"}
+              scroll={false}
+              data-testid="toggle-all-runs"
+              className="text-sm font-medium text-sea-800 underline decoration-pearl decoration-2 underline-offset-4 transition-colors hover:text-coral"
+            >
+              {showAllRuns ? "إخفاء ضغطات التحديث العامة بلا تغيير" : "عرض كل العمليات"}
+            </Link>
+          )}
+        </div>
+        {!showAllRuns && quietPublicPresses > 0 && (
+          <p className="mt-1 text-xs text-ink/50" data-testid="hidden-runs-note">
+            مخفية: {countPhrase(quietPublicPresses, PRESS)} من زر التحديث العام لم تغيّر أي بيانات. تظهر هنا الضغطات
+            الفاشلة والجزئية وكل ضغطة حدّثت بيانات.
+          </p>
+        )}
         {logs.length === 0 ? (
           <p className="mt-3 rounded-2xl border border-dashed border-line-light bg-white px-6 py-8 text-center text-sm text-ink/50">
-            لا يوجد سجل بعد.
+            {quietPublicPresses > 0 && !showAllRuns ? "لا توجد عمليات مزامنة أخرى بعد." : "لا يوجد سجل بعد."}
           </p>
         ) : (
           <div className="mt-3 overflow-x-auto rounded-2xl border border-line-light bg-white">
@@ -516,11 +553,19 @@ export function AdminDashboard({
                 </tr>
               </thead>
               <tbody>
-                {logs.map((log, index) => {
-                  const status = resolveSyncRunStatus(log, { isLatest: index === 0, lockRunning });
+                {logs.map((log) => {
+                  // Only the newest real run can be live. `stats.lastSync` is that row (it skips no-op
+                  // public presses); `index === 0` would be wrong when the list is filtered or a quiet
+                  // press is the newest row of the unfiltered one.
+                  const status = resolveSyncRunStatus(log, { isLatest: log.id === lastSync?.id, lockRunning });
                   const scope = describeScope(log.scope);
+                  const quiet = isQuietPublicPress(log);
                   return (
-                    <tr key={log.id} className="border-b border-line-light align-top last:border-0">
+                    <tr
+                      key={log.id}
+                      className={`border-b border-line-light align-top last:border-0${quiet ? " opacity-60" : ""}`}
+                      data-quiet-press={quiet ? "true" : undefined}
+                    >
                       <td className="px-4 py-3 text-sea-900">{formatDateTimeAr(log.startedAt)}</td>
                       <td className="px-4 py-3">
                         <RunStatusBadge status={status} raw={log.status} />

@@ -62,6 +62,15 @@ export function resolveSyncRunStatus(
   return ctx.isLatest && ctx.lockRunning ? "running" : "aborted";
 }
 
+/**
+ * Pure twin of `QUIET_PUBLIC_PRESS` in `queries.ts` (which filters in SQL): a
+ * public refresh press that ended `success` with nothing failed and nothing
+ * updated. Anything else a visitor triggers is worth showing.
+ */
+export function isQuietPublicPress(log: { trigger: string; status: string; failed: number; updated: number }): boolean {
+  return log.trigger === "public" && log.status === "success" && log.failed === 0 && log.updated === 0;
+}
+
 const TRIGGER_LABEL: Record<string, string> = {
   cli: "سطر الأوامر",
   api: "الواجهة البرمجية",
