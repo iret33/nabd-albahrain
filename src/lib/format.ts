@@ -91,6 +91,77 @@ export function formatCompact(n: number | null | undefined): string {
   return compactFormatter.format(n);
 }
 
+const compactArFormatter = new Intl.NumberFormat("ar", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+  numberingSystem: "latn",
+});
+
+const RLM = "‏";
+const LRI = "⁦";
+const PDI = "⁩";
+const BIDI_MARKS = /[‎‏؜⁦-⁩]/g;
+
+/** `text` without the invisible direction marks (to measure or compare what is actually drawn). */
+export function stripBidiMarks(text: string): string {
+  return text.replace(BIDI_MARKS, "");
+}
+
+/**
+ * Compact number for a chart axis in the Arabic UI: 1,200 -> "1.2 ألف", 8,000 -> "8 آلاف",
+ * 1,500,000 -> "1.5 مليون", 60,000,000,000 -> "60 مليار" (CLDR's own plural forms), Latin digits,
+ * at most one decimal. Below 1,000 the plain number. `formatCompact` ("1.5M") stays for
+ * places that want the Latin suffixes.
+ *
+ * The result starts with U+200F (RLM) so that, drawn inside an `dir="ltr"` canvas (SVG axis text
+ * has no paragraph direction of its own), it still reads right to left: number first, unit after
+ * it, which on screen puts the digits at the right of the word. A negative number is wrapped in
+ * an LTR isolate so its minus sign stays at the left of the digits.
+ */
+export function formatCompactAr(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  const parts = compactArFormatter.formatToParts(n);
+  const unit = parts.find((p) => p.type === "compact")?.value;
+  const number = parts
+    .filter((p) => p.type === "integer" || p.type === "group" || p.type === "decimal" || p.type === "fraction" || p.type === "minusSign")
+    .map((p) => p.value)
+    .join("");
+  if (!unit) return number;
+  return `${RLM}${n < 0 ? `${LRI}${number}${PDI}` : number} ${unit}`;
+}
+
+const periodMonthFormatter = new Intl.DateTimeFormat("ar-BH", {
+  month: "long",
+  year: "numeric",
+  numberingSystem: "latn",
+  timeZone: "UTC",
+});
+
+/**
+ * Label of a chart period key for the Arabic UI: "2022-09" -> "سبتمبر 2022"; a year ("2014")
+ * and any other key come back unchanged. The chart data keeps the ISO key (partial-period
+ * detection, the data table and the CSV all key on it); only what is drawn is localised.
+ */
+export function formatPeriodLabelAr(period: unknown): string {
+  const text = typeof period === "string" ? period : String(period ?? "");
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(text);
+  if (!m) return text;
+  // `Date.UTC` maps years 0-99 to 1900-1999; setUTCFullYear does not.
+  const date = new Date(Date.UTC(2000, Number(m[2]) - 1, 15));
+  date.setUTCFullYear(Number(m[1]));
+  return periodMonthFormatter.format(date);
+}
+
+/**
+ * `formatPeriodLabelAr` as axis text inside an `dir="ltr"` chart canvas: a month label gets the
+ * RLM prefix (see `formatCompactAr`) so it reads "سبتمبر 2022" and not "2022 سبتمبر"; a year is
+ * only digits and needs none.
+ */
+export function formatPeriodTickAr(period: unknown): string {
+  const label = formatPeriodLabelAr(period);
+  return label !== String(period ?? "") ? `${RLM}${label}` : label;
+}
+
 const relativeFormatter = new Intl.RelativeTimeFormat("ar-u-nu-latn", { numeric: "auto" });
 
 /**
