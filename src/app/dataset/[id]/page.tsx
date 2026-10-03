@@ -216,7 +216,13 @@ export default async function DatasetPage({ params, searchParams }: Props) {
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData }} />
 
-      <Breadcrumb theme={dataset.theme} />
+      <Breadcrumb
+        items={[
+          { label: "الرئيسية", href: "/" },
+          ...(dataset.theme ? [{ label: dataset.theme, href: `/categories/${encodeURIComponent(dataset.theme)}` }] : []),
+          { label: title },
+        ]}
+      />
 
       {removed && <RemovedBanner removedAt={dataset.removedAt} lastSyncedAt={dataset.lastSyncedAt} />}
 

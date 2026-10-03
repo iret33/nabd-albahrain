@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { formatRelativeAr } from "@/lib/format";
+import { formatSpanAr } from "@/lib/arabic-duration";
 
 /**
  * "Check for new data" button — the visitor-facing end of the refresh flow.
@@ -16,10 +17,13 @@ import { formatRelativeAr } from "@/lib/format";
  *   (now invalidated) cache and the page shows the new data in place.
  *
  * The server is authoritative for every limit (DB cooldowns, origin check,
- * no force); this component only presents them. On mount it makes one cheap
- * GET /api/freshness so a run that is already in flight, a cooldown that is
- * already ticking, or a disabled feature (PUBLIC_REFRESH_ENABLED=0) is
- * reflected immediately. It does not poll while idle.
+ * no force); this component only presents them.
+ *
+ * State lives in a small module-level store keyed by scope (+ dataset id), NOT
+ * in the component: the header and the hero both render a catalog button, and
+ * they must show the same run, the same countdown and the same outcome, with
+ * ONE poller between them that also survives either instance unmounting
+ * mid-run (e.g. the hero button when the visitor navigates away).
  */
 
 type Scope = "catalog" | "dataset";
@@ -36,9 +40,195 @@ interface FreshnessResponse {
   dataset?: { refreshAvailableAt: string | null; removed: boolean } | null;
 }
 
+interface State {
+  enabled: boolean;
+  phase: Phase;
+  message: string;
+  progress: { done: number; total: number } | null;
+  /** Epoch ms until which the server will refuse another refresh, or null. */
+  cooldownUntil: number | null;
+}
+
 const POLL_MS = 2_000;
 const POLL_TIMEOUT_MS = 150_000;
 const BUBBLE_MS = 7_000;
+
+const INITIAL: State = { enabled: true, phase: "idle", message: "", progress: null, cooldownUntil: null };
+
+class RefreshStore {
+  private state: State = INITIAL;
+  private listeners = new Set<() => void>();
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private bubbleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastChange: string | null = null;
+  private probed = false;
+  /** router.refresh of the most recently mounted button (it is app-global, any instance's works). */
+  refreshPage: () => void = () => {};
+
+  constructor(
+    private readonly scope: Scope,
+    private readonly datasetId: string | undefined,
+  ) {}
+
+  private get freshnessUrl(): string {
+    return this.scope === "dataset" && this.datasetId
+      ? `/api/freshness?dataset=${encodeURIComponent(this.datasetId)}`
+      : "/api/freshness";
+  }
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  getSnapshot = (): State => this.state;
+  getServerSnapshot = (): State => INITIAL;
+
+  private set(patch: Partial<State>) {
+    this.state = { ...this.state, ...patch };
+    for (const l of this.listeners) l();
+  }
+
+  /** Final state + a transient message; the aria-live region always carries it. */
+  private settle(phase: Phase, message: string) {
+    this.set({ phase, message, progress: null });
+    if (this.bubbleTimer) clearTimeout(this.bubbleTimer);
+    this.bubbleTimer = setTimeout(() => this.set({ message: "" }), BUBBLE_MS);
+  }
+
+  private startCooldown(untilIso: string | null, fallbackSeconds = 0) {
+    const until = untilIso ? Date.parse(untilIso) : Date.now() + fallbackSeconds * 1000;
+    if (Number.isFinite(until) && until > Date.now()) this.set({ cooldownUntil: until });
+  }
+
+  private cooldownFrom(data: FreshnessResponse): string | null {
+    return this.scope === "dataset" ? (data.dataset?.refreshAvailableAt ?? null) : data.cooldown.catalogUntil;
+  }
+
+  /** One cheap probe: feature flag, run already in flight, cooldown already ticking. Once per store. */
+  async probe(): Promise<void> {
+    if (this.probed) return;
+    this.probed = true;
+    try {
+      const res = await fetch(this.freshnessUrl, { cache: "no-store" });
+      if (!res.ok) return;
+      const data: FreshnessResponse = await res.json();
+      this.lastChange = data.lastDataChangeAt;
+      if (!data.refreshEnabled || (this.scope === "dataset" && (!data.dataset || data.dataset.removed))) {
+        this.set({ enabled: false });
+        return;
+      }
+      this.startCooldown(this.cooldownFrom(data));
+      if (data.running && this.state.phase !== "working") {
+        this.set({ phase: "working", progress: data.progress });
+        this.poll(Date.now());
+      }
+    } catch {
+      this.probed = false; // offline: let the next mount try again; the button stays usable
+    }
+  }
+
+  private poll(startedAt: number) {
+    if (this.pollTimer) return; // exactly one poller per store
+    const tick = async () => {
+      this.pollTimer = null;
+      try {
+        const res = await fetch(this.freshnessUrl, { cache: "no-store" });
+        if (res.ok) {
+          const data: FreshnessResponse = await res.json();
+          if (data.running) {
+            this.set({ progress: data.progress });
+          } else {
+            if (data.lastRunStatus === "failed" || data.lastRunStatus === "aborted") {
+              this.settle("error", "تعذّر الوصول إلى المصدر الآن — تُعرض آخر بيانات محفوظة");
+            } else {
+              const changed = data.lastDataChangeAt !== this.lastChange;
+              this.lastChange = data.lastDataChangeAt;
+              this.startCooldown(this.cooldownFrom(data));
+              this.settle("done", changed ? "تم تحديث البيانات" : "البيانات محدّثة بالفعل — لا جديد في المصدر");
+            }
+            this.refreshPage();
+            return;
+          }
+        }
+      } catch {
+        // Transient network error: keep polling until the timeout below.
+      }
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        this.settle("done", "ما زال التحديث جاريًا في الخلفية — أعد تحميل الصفحة بعد قليل");
+        return;
+      }
+      this.pollTimer = setTimeout(tick, POLL_MS);
+    };
+    this.pollTimer = setTimeout(tick, POLL_MS);
+  }
+
+  async click(): Promise<void> {
+    if (this.state.phase === "working") return;
+    this.set({ phase: "working", message: "", progress: null });
+    try {
+      const res = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(this.scope === "dataset" ? { scope: this.scope, id: this.datasetId } : { scope: this.scope }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        retryAfterSeconds?: number;
+        checkedAt?: string;
+      };
+      if (res.status === 202 || (res.ok && (body.status === "started" || body.status === "already_running"))) {
+        this.poll(Date.now());
+        return;
+      }
+      if (res.ok && body.status === "up_to_date") {
+        // The server consumed the catalog cooldown to answer this; pick it up now
+        // so the button shows the countdown instead of a surprise 429 on the next press.
+        await this.syncCooldown();
+        this.settle("done", `البيانات محدّثة بالفعل — آخر فحص ${formatRelativeAr(body.checkedAt)}`);
+        this.refreshPage();
+        return;
+      }
+      if (res.status === 429) {
+        const wait = Math.max(1, Math.round(body.retryAfterSeconds ?? 60));
+        this.startCooldown(null, wait);
+        this.settle("cooldown", `حُدّثت البيانات للتو — يمكنك المحاولة بعد ${formatSpanAr(wait)}`);
+        this.refreshPage(); // someone else just refreshed: show what they pulled in
+        return;
+      }
+      if (res.status === 404) return this.settle("error", "هذه المجموعة غير متوفرة في المصدر الحالي");
+      if (res.status === 503) return this.set({ enabled: false });
+      this.settle("error", "تعذّر بدء التحديث الآن، حاول لاحقًا");
+    } catch {
+      this.settle("error", "تعذّر الاتصال بالخادم — تحقق من اتصالك وحاول مجددًا");
+    }
+  }
+
+  /** Read the server's current cooldown (best effort). */
+  private async syncCooldown(): Promise<void> {
+    try {
+      const res = await fetch(this.freshnessUrl, { cache: "no-store" });
+      if (res.ok) this.startCooldown(this.cooldownFrom((await res.json()) as FreshnessResponse));
+    } catch {
+      // Not critical: the next press simply gets the server's 429.
+    }
+  }
+
+  /** Cooldown expired: clear it (the button re-enables). */
+  expireCooldown() {
+    if (this.state.cooldownUntil && Date.now() >= this.state.cooldownUntil) this.set({ cooldownUntil: null });
+  }
+}
+
+const stores = new Map<string, RefreshStore>();
+function storeFor(scope: Scope, datasetId?: string): RefreshStore {
+  const key = scope === "dataset" ? `dataset:${datasetId ?? ""}` : "catalog";
+  let store = stores.get(key);
+  if (!store) {
+    store = new RefreshStore(scope, datasetId);
+    stores.set(key, store);
+  }
+  return store;
+}
 
 const VARIANT_CLASS: Record<Variant, string> = {
   header:
@@ -66,12 +256,6 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
   );
 }
 
-function formatCountdown(seconds: number): string {
-  if (seconds < 60) return `${seconds} ثانية`;
-  const minutes = Math.ceil(seconds / 60);
-  return minutes === 1 ? "دقيقة" : `${minutes} دقائق`;
-}
-
 export function RefreshButton({
   scope = "catalog",
   datasetId,
@@ -88,192 +272,48 @@ export function RefreshButton({
   className?: string;
 }) {
   const router = useRouter();
-  const [enabled, setEnabled] = useState(true);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [message, setMessage] = useState("");
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const store = storeFor(scope, datasetId);
+  const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
 
-  const mounted = useRef(true);
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastChange = useRef<string | null>(null);
-
-  const freshnessUrl = scope === "dataset" && datasetId
-    ? `/api/freshness?dataset=${encodeURIComponent(datasetId)}`
-    : "/api/freshness";
-
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-  }, []);
-
-  /** Final state + a transient message; the aria-live region always carries it. */
-  const settle = useCallback((next: Phase, text: string) => {
-    if (!mounted.current) return;
-    setPhase(next);
-    setMessage(text);
-    setProgress(null);
-    if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
-    bubbleTimer.current = setTimeout(() => {
-      if (mounted.current) setMessage("");
-    }, BUBBLE_MS);
-  }, []);
-
-  const startCooldown = useCallback((untilIso: string | null, fallbackSeconds = 0) => {
-    const until = untilIso ? Date.parse(untilIso) : Date.now() + fallbackSeconds * 1000;
-    if (Number.isFinite(until) && until > Date.now()) setCooldownUntil(until);
-  }, []);
-
-  const poll = useCallback(
-    (startedAt: number) => {
-      const tick = async () => {
-        if (!mounted.current) return;
-        try {
-          const res = await fetch(freshnessUrl, { cache: "no-store" });
-          if (res.ok) {
-            const data: FreshnessResponse = await res.json();
-            if (data.running) {
-              setProgress(data.progress);
-            } else {
-              stopPolling();
-              if (data.lastRunStatus === "failed" || data.lastRunStatus === "aborted") {
-                settle("error", "تعذّر الوصول إلى المصدر الآن — تُعرض آخر بيانات محفوظة");
-              } else {
-                const changed = data.lastDataChangeAt !== lastChange.current;
-                lastChange.current = data.lastDataChangeAt;
-                startCooldown(scope === "dataset" ? (data.dataset?.refreshAvailableAt ?? null) : data.cooldown.catalogUntil);
-                settle("done", changed ? "تم تحديث البيانات" : "البيانات محدّثة بالفعل — لا جديد في المصدر");
-              }
-              router.refresh();
-              return;
-            }
-          }
-        } catch {
-          // Transient network error: keep polling until the timeout below.
-        }
-        if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
-          stopPolling();
-          settle("done", "ما زال التحديث جاريًا في الخلفية — أعد تحميل الصفحة بعد قليل");
-          return;
-        }
-        pollTimer.current = setTimeout(tick, POLL_MS);
-      };
-      pollTimer.current = setTimeout(tick, POLL_MS);
-    },
-    [freshnessUrl, router, scope, settle, startCooldown, stopPolling],
-  );
-
-  // One cheap probe on mount: feature flag, run already in flight, cooldown already ticking.
+  // Let the store re-render the page through whichever instance is mounted, and probe once.
   useEffect(() => {
-    mounted.current = true;
-    const controller = new AbortController();
-    (async () => {
-      try {
-        const res = await fetch(freshnessUrl, { cache: "no-store", signal: controller.signal });
-        if (!res.ok) return;
-        const data: FreshnessResponse = await res.json();
-        lastChange.current = data.lastDataChangeAt;
-        if (!data.refreshEnabled || (scope === "dataset" && (!data.dataset || data.dataset.removed))) {
-          setEnabled(false);
-          return;
-        }
-        startCooldown(scope === "dataset" ? (data.dataset?.refreshAvailableAt ?? null) : data.cooldown.catalogUntil);
-        if (data.running) {
-          setPhase("working");
-          setProgress(data.progress);
-          poll(Date.now());
-        }
-      } catch {
-        // Offline / aborted: leave the button usable; a click will report the problem.
-      }
-    })();
-    return () => {
-      mounted.current = false;
-      controller.abort();
-      stopPolling();
-      if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
-    };
-  }, [freshnessUrl, poll, scope, startCooldown, stopPolling]);
+    store.refreshPage = () => router.refresh();
+    void store.probe();
+  }, [store, router]);
 
-  // Tick once a second only while a cooldown is counting down.
+  // Tick once a second only while a cooldown is counting down; re-render via a store no-op.
+  const cooling = state.cooldownUntil !== null && state.phase !== "working";
   useEffect(() => {
-    if (!cooldownUntil) return;
-    const timer = setInterval(() => {
-      const t = Date.now();
-      setNow(t);
-      if (t >= cooldownUntil) setCooldownUntil(null);
-    }, 1_000);
+    if (!state.cooldownUntil) return;
+    const timer = setInterval(() => store.expireCooldown(), 1_000);
     return () => clearInterval(timer);
-  }, [cooldownUntil]);
+  }, [store, state.cooldownUntil]);
 
-  const onClick = useCallback(async () => {
-    if (phase === "working") return;
-    setPhase("working");
-    setMessage("");
-    setProgress(null);
-    try {
-      const res = await fetch("/api/refresh", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(scope === "dataset" ? { scope, id: datasetId } : { scope }),
-      });
-      const body = (await res.json().catch(() => ({}))) as {
-        status?: string;
-        retryAfterSeconds?: number;
-        checkedAt?: string;
-      };
-      if (res.status === 202 || (res.ok && (body.status === "started" || body.status === "already_running"))) {
-        poll(Date.now());
-        return;
-      }
-      if (res.ok && body.status === "up_to_date") {
-        settle("done", `البيانات محدّثة بالفعل — آخر فحص ${formatRelativeAr(body.checkedAt)}`);
-        router.refresh();
-        return;
-      }
-      if (res.status === 429) {
-        const wait = Math.max(1, Math.round(body.retryAfterSeconds ?? 60));
-        startCooldown(null, wait);
-        settle("cooldown", `حُدّثت البيانات للتو — يمكنك المحاولة بعد ${formatCountdown(wait)}`);
-        router.refresh(); // someone else just refreshed: show what they pulled in
-        return;
-      }
-      if (res.status === 404) return settle("error", "هذه المجموعة غير متوفرة في المصدر الحالي");
-      if (res.status === 503) {
-        setEnabled(false);
-        return;
-      }
-      settle("error", "تعذّر بدء التحديث الآن، حاول لاحقًا");
-    } catch {
-      settle("error", "تعذّر الاتصال بالخادم — تحقق من اتصالك وحاول مجددًا");
-    }
-  }, [datasetId, phase, poll, router, scope, settle, startCooldown]);
+  const secondsLeft = useCountdown(state.cooldownUntil);
+  const onClick = useCallback(() => void store.click(), [store]);
 
-  if (!enabled) return null;
+  if (!state.enabled) return null;
 
-  const working = phase === "working";
-  const remaining = cooldownUntil ? Math.max(0, Math.ceil((cooldownUntil - now) / 1000)) : 0;
-  const cooling = remaining > 0 && !working;
+  const working = state.phase === "working";
+  const isCooling = cooling && secondsLeft > 0;
   const idleLabel = label ?? (variant === "header" ? "تحديث" : "تحديث البيانات");
   const buttonText = working
-    ? progress && progress.total > 1
-      ? `جارٍ التحديث (${progress.done}/${progress.total})`
+    ? state.progress && state.progress.total > 1
+      ? `جارٍ التحديث (${state.progress.done}/${state.progress.total})`
       : "جارٍ التحقق…"
-    : cooling
-      ? `بعد ${formatCountdown(remaining)}`
+    : isCooling
+      ? `بعد ${formatSpanAr(secondsLeft)}`
       : idleLabel;
-  const showBubble = variant === "header" && message !== "";
+  const showBubble = variant === "header" && state.message !== "";
 
   return (
     <div className={`relative inline-flex flex-col items-start gap-1 ${className}`}>
       <button
         type="button"
         onClick={onClick}
-        disabled={working || cooling}
+        disabled={working || isCooling}
         aria-busy={working}
-        title={cooling ? "تم التحديث للتو — الرجاء الانتظار قليلًا قبل المحاولة مجددًا" : "تحقق من وجود بيانات جديدة في المصدر الرسمي"}
+        title={isCooling ? "تم التحديث للتو — الرجاء الانتظار قليلًا قبل المحاولة مجددًا" : "تحقق من وجود بيانات جديدة في المصدر الرسمي"}
         className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-full text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${VARIANT_CLASS[variant]}`}
       >
         <RefreshIcon spinning={working} />
@@ -289,11 +329,24 @@ export function RefreshButton({
             ? showBubble
               ? "absolute end-0 top-full z-50 mt-2 w-max max-w-[16rem] rounded-lg bg-sea-900 px-3 py-2 text-xs font-medium text-sand-50 shadow-lg"
               : "sr-only"
-            : `text-xs ${variant === "hero" ? "text-sand-100/90" : "text-ink/70"} ${message ? "" : "sr-only"}`
+            : `text-xs ${variant === "hero" ? "text-sand-100/90" : "text-ink/70"} ${state.message ? "" : "sr-only"}`
         }
       >
-        {message || (working ? "جارٍ التحقق من وجود بيانات جديدة" : "")}
+        {state.message || (working ? "جارٍ التحقق من وجود بيانات جديدة" : "")}
       </span>
     </div>
+  );
+}
+
+/** Seconds left until `untilMs` (0 when none), re-evaluated every second while active. */
+function useCountdown(untilMs: number | null): number {
+  return useSyncExternalStore(
+    (onChange) => {
+      if (!untilMs) return () => {};
+      const timer = setInterval(onChange, 1_000);
+      return () => clearInterval(timer);
+    },
+    () => (untilMs ? Math.max(0, Math.ceil((untilMs - Date.now()) / 1000)) : 0),
+    () => 0,
   );
 }

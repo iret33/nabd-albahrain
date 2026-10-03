@@ -381,7 +381,7 @@ describe("chartCaption", () => {
         otherSeriesBucketed: true,
       }),
     );
-    expect(stacked.title).toBe("متوسط Rate حسب Governorate وType");
+    expect(stacked.title).toBe("متوسط Rate حسب Governorate و Type");
     expect(stacked.notes).toEqual(["القيم متوسطات وليست مجاميع قابلة للجمع", "أعمدة متجاورة وليست متراكمة", "بقية السلاسل مجمّعة ضمن «أخرى»"]);
 
     expect(chartCaption(asViz({ type: "histogram", geoFields: [], measureField: "a", measureLabel: "Amount", unit: "BHD", binCount: 10, min: 0, max: 1 }))).toBe("توزيع Amount (BHD).");

@@ -56,6 +56,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     withDate(`${SITE_URL}/publishers`, aggregateModified),
     withDate(`${SITE_URL}/updates`, aggregateModified),
     { url: `${SITE_URL}/about` },
+    { url: `${SITE_URL}/developers` },
   ];
 
   const themeEntries: MetadataRoute.Sitemap = themes.map((t) =>

@@ -259,7 +259,12 @@ const loadPortalStats = unstable_cache(
       prisma.dataset.aggregate({ where: live, _sum: { sourceCount: true }, _max: { sourceModified: true } }),
       prisma.dataset.count({ where: { ...live, lastSyncedAt: { not: null } } }),
       prisma.syncState.findUnique({ where: { id: 1 } }),
+      // Newest FINISHED non-recompute run: the same rule /api/freshness uses for
+      // `lastRunStatus`, so a successful no-network recompute can never hide a
+      // failed real sync from the hero/footer notice. (`OR` with an explicit null
+      // branch: `scope <> 'recompute'` alone would drop legacy rows with NULL scope.)
       prisma.syncLog.findFirst({
+        where: { status: { not: "running" }, OR: [{ scope: null }, { scope: { not: "recompute" } }] },
         orderBy: { startedAt: "desc" },
         select: { status: true, startedAt: true, finishedAt: true },
       }),

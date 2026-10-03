@@ -26,7 +26,7 @@ export async function RelatedDatasets({
       </h2>
       <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((dataset) => (
-          <DatasetCard key={dataset.id} dataset={dataset} />
+          <DatasetCard key={dataset.id} dataset={dataset} headingLevel={3} />
         ))}
       </div>
     </section>

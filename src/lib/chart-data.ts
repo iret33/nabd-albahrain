@@ -293,7 +293,7 @@ export function chartCaptionParts(vizConfig: VizConfig | null): ChartCaptionPart
     title = `${agg} ${measure} حسب ${vizConfig.dimensionLabel}`;
     if (vizConfig.otherBucketed) notes.push("تُعرض أعلى الفئات وتُجمع البقية ضمن «أخرى»");
   } else {
-    title = `${agg} ${measure} حسب ${vizConfig.xLabel} و${vizConfig.seriesLabel}`;
+    title = `${agg} ${measure} حسب ${vizConfig.xLabel} و ${vizConfig.seriesLabel}`;
     if (vizConfig.stacked === false) notes.push("أعمدة متجاورة وليست متراكمة");
     if (vizConfig.otherSeriesBucketed) notes.push("بقية السلاسل مجمّعة ضمن «أخرى»");
     else if (vizConfig.seriesOverflow) notes.push(`يُعرض أعلى ${vizConfig.seriesValues.length} فئات فقط`);

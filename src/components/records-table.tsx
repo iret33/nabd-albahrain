@@ -259,6 +259,7 @@ export function RecordsTable({
         page={recordsPage.page}
         totalPages={recordsPage.totalPages}
         hrefForPage={(p) => recordsHref(datasetId, { ...view, page: p })}
+        nofollow
       />
     </div>
   );
