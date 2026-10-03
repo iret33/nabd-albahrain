@@ -54,7 +54,8 @@ function LtrGroup({ text }: { text: string }) {
     );
   }
   return (
-    <span dir="ltr">
+    // A group with Latin letters is English text: lang lets a screen reader switch voice.
+    <span dir="ltr" lang={/[A-Za-z]/.test(text) ? "en" : undefined}>
       {pieces.map((piece, i) =>
         piece.numeric ? (
           <span key={i} className="tabular-figures">

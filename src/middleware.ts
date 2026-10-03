@@ -1,6 +1,12 @@
 /**
- * Two jobs, in this order:
+ * Three jobs, in this order:
  *
+ * 0. Turn a path with malformed %-encoding (a pasted link cut in the middle of a
+ *    multi-byte sequence, `/dataset/%E0%A4%A`) into the site's own Arabic 404.
+ *    Next rejects such a path BEFORE any route or `not-found.tsx` runs, with its
+ *    bare English "400 Bad Request" page that has none of the site chrome; a
+ *    rewrite to a path that does not exist reaches the normal 404 page. The
+ *    query string is NOT checked (malformed %-sequences there are tolerated).
  * 1. Strip query keys that crash Next 15's `searchParams` Promise (see
  *    `UNSAFE_QUERY_KEYS`) before ANY page code runs.
  * 2. Guard every `/admin/*` route except the login form itself. No user
@@ -54,8 +60,21 @@ function loginUrl(req: NextRequest): URL {
  */
 const UNSAFE_QUERY_KEYS = ["constructor"] as const;
 
+function hasMalformedEncoding(pathname: string): boolean {
+  try {
+    decodeURIComponent(pathname);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  if (hasMalformedEncoding(pathname)) {
+    return NextResponse.rewrite(new URL("/__malformed-path", req.url), { status: 404 });
+  }
 
   if ((pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login") {
     const session = req.cookies.get(ADMIN_COOKIE_NAME)?.value;

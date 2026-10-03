@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { axisNumberFormatter, valueAxisWidth } from "@/lib/chart-model";
-import { formatCompactAr, formatPeriodLabelAr, formatPeriodTickAr, stripBidiMarks } from "@/lib/format";
+import { formatCompact, formatCompactAr, formatPeriodLabelAr, formatPeriodTickAr, stripBidiMarks } from "@/lib/format";
 
 const RLM = "‏";
 
@@ -46,8 +46,10 @@ describe("formatCompactAr (R5-14: Arabic units on value axes)", () => {
     const withMarks = valueAxisWidth(formatCompactAr, 0, 8000);
     const drawn = valueAxisWidth((n) => stripBidiMarks(formatCompactAr(n)), 0, 8000);
     expect(drawn).toBeLessThan(withMarks);
-    // and the Arabic label is wider than the Latin one it replaces, so the axis grows with it
-    expect(drawn).toBeGreaterThan(valueAxisWidth(axisNumberFormatter(8000), 0, 8000));
+    // and the Arabic label is wider than the Latin "8K" it replaced, so the axis grows with it
+    expect(drawn).toBeGreaterThan(valueAxisWidth(formatCompact, 0, 8000));
+    // axisNumberFormatter now IS the Arabic formatter from 1,000 up (one source of truth)
+    expect(valueAxisWidth(axisNumberFormatter(8000), 0, 8000)).toBe(withMarks);
   });
 });
 

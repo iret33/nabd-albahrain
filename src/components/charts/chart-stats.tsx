@@ -1,8 +1,7 @@
 import type { ReactNode } from "react";
 import type { VizConfig } from "@/lib/sync/derived";
 import { extractTrendSeries, summarizeSeries, type SeriesPoint } from "@/lib/chart-data";
-import { formatPercent } from "@/lib/format";
-import { formatPeriodAr } from "@/lib/headline";
+import { formatChangePercent, formatPeriodAr } from "@/lib/headline";
 import { isAdjacentPeriod } from "@/lib/series";
 import { NumberLatin } from "@/components/number-latin";
 
@@ -22,11 +21,13 @@ import { NumberLatin } from "@/components/number-latin";
  * "-" and "+" stay on the right side of the digits in an RTL line.
  */
 function ChangeBadge({ pct, additive }: { pct: number; additive: boolean }) {
-  const rounded = Math.round(pct * 10) / 10;
-  const flat = rounded === 0;
-  const up = rounded > 0;
+  // ONE rounding/sign rule shared with the lead sentence and the home card (headline.ts):
+  // a change that rounds to 0.0 is flat, with no sign and no arrow direction.
+  const change = formatChangePercent(pct);
+  const flat = change.direction === "flat";
+  const up = change.direction === "up";
   const tone = flat || !additive ? "bg-sand-100 text-ink" : up ? "bg-[#e7f2eb] text-[#1f6b45]" : "bg-[#f8e9e7] text-[#9c3a33]";
-  const spoken = flat ? "بلا تغيير" : `${up ? "ارتفاع" : "انخفاض"} بنسبة ${Math.abs(rounded).toFixed(1)}%`;
+  const spoken = flat ? "بلا تغيير" : `${up ? "ارتفاع" : "انخفاض"} بنسبة ${change.magnitude}%`;
   return (
     <span
       dir="ltr"
@@ -35,7 +36,7 @@ function ChangeBadge({ pct, additive }: { pct: number; additive: boolean }) {
       <span aria-hidden="true" className="text-[10px]">
         {flat ? "■" : up ? "▲" : "▼"}
       </span>
-      <span aria-hidden="true">{flat ? "0.0%" : formatPercent(rounded)}</span>
+      <span aria-hidden="true">{change.text}</span>
       <span className="sr-only">{spoken}</span>
     </span>
   );
@@ -54,7 +55,7 @@ function Tile({ label, children, sub }: { label: string; children: ReactNode; su
 function Value({ value, unit }: { value: number; unit?: string }) {
   return (
     <>
-      <NumberLatin value={value} maximumFractionDigits={2} />
+      <NumberLatin value={value} />
       {unit && (
         <span className="ms-1 text-xs font-normal text-ink/70">
           <bdi>{unit}</bdi>

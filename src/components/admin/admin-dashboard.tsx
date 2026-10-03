@@ -626,7 +626,7 @@ export function AdminDashboard({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="ابحث بالمعرّف أو العنوان أو الجهة…"
-            className="w-full max-w-xs rounded-lg border border-line-light bg-white px-3.5 py-2 text-sm outline-none focus-visible:border-pearl"
+            className="w-full max-w-xs rounded-lg border border-line-light bg-white px-3.5 py-2 text-base sm:text-sm pointer-coarse:text-base outline-none focus-visible:border-pearl"
           />
         </div>
         <p className="mt-2 text-xs text-ink/50">

@@ -56,10 +56,8 @@ import {
 import type { CatalogDataset, CatalogField } from "./schemas";
 import { chunk, createGate, mapWithConcurrency } from "./utils";
 import { computeSourceVersion } from "./version";
+import { INSERT_BATCH_SIZE, MAX_ROWS_HARD_CAP, MAX_ROWS_STORED_WHEN_CAPPED } from "@/lib/row-limits";
 
-const INSERT_BATCH_SIZE = 1000;
-const MAX_ROWS_HARD_CAP = 300_000;
-const MAX_ROWS_STORED_WHEN_CAPPED = 50_000;
 
 export interface RunSyncOptions {
   /** Only sync records for the first N datasets (catalog order). */

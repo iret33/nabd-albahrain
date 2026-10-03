@@ -52,8 +52,9 @@ export interface RunRecomputeResult {
 /** Datasets whose derived columns are out of date and can be recomputed locally. */
 function eligibleWhere(opts: { datasetId?: string; force?: boolean }): Prisma.DatasetWhereInput {
   return {
+    // Zero-row datasets are eligible too: their lead sentence ("... لا تحتوي ...")
+    // is derived text like any other and goes stale with the wording.
     syncStatus: "ok",
-    sourceCount: { gt: 0 },
     ...(opts.datasetId ? { id: opts.datasetId } : {}),
     ...(opts.force
       ? {}

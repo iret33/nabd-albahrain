@@ -10,8 +10,11 @@
  *    GET /api/freshness `stale`: twice the auto-sync interval, 48h when the
  *    scheduler is off): the scheduler may have silently stopped.
  *
- * A run that is still "running" or finished "partial" (it completed; a few
- * large datasets were deferred) is not a problem and raises no notice.
+ * A run that is still "running" or finished "partial" raises no notice here.
+ * "partial" means the run completed but some individual datasets FAILED (a
+ * deferred large dataset never changes a run's status); a persistently failing
+ * dataset is surfaced per dataset and by /api/health/ready, because a banner on
+ * every page for one sticky failure would cry wolf.
  */
 
 export interface FreshnessNoticeInput {

@@ -11,6 +11,7 @@ import {
 import { extractFeaturedMetric } from "@/lib/chart-data";
 import { themeColor } from "@/lib/theme-colors";
 import { formatPercent } from "@/lib/format";
+import { formatChangePercent } from "@/lib/headline";
 import { getStaleAfterMs } from "@/lib/sync/config";
 import { freshnessNotice } from "@/lib/freshness-notice";
 import { SITE_DESCRIPTION, SITE_NAME, alternatesFor, jsonLd, openGraphFor, websiteJsonLd } from "@/lib/seo";
@@ -47,6 +48,12 @@ import { Sparkline } from "@/components/charts/sparkline";
  * cheap next to the actual DB reads it wraps. (The root layout now declares
  * the same for every route; kept here too so this page stands on its own.)
  */
+/** The arrow follows the SAME rounded result as the printed percent: a change that prints 0.0% is flat. */
+function changeArrow(pct: number): string {
+  const { direction } = formatChangePercent(pct);
+  return direction === "up" ? "▲" : direction === "down" ? "▼" : "■";
+}
+
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
@@ -94,7 +101,7 @@ async function FeaturedStatsBand() {
               </span>
               {typeof metric.changePct === "number" && Number.isFinite(metric.changePct) && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-sea-900/5 px-2 py-0.5 font-medium text-sea-900">
-                  <span aria-hidden="true">{metric.changePct > 0 ? "▲" : metric.changePct < 0 ? "▼" : "■"}</span>
+                  <span aria-hidden="true">{changeArrow(metric.changePct)}</span>
                   <NumberLatin value={formatPercent(metric.changePct)} />
                   {metric.prevPeriod && (
                     <span className="font-normal text-ink-muted">

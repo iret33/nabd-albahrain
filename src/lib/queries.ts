@@ -14,8 +14,9 @@
  *   (detail, card, records meta, first records page) carry ONLY
  *   `dataset:<id>`. The sync engine's notify step calls
  *   `revalidateTag("datasets")` plus `revalidateTag(datasetTag(id))` for each
- *   dataset it actually updated, so one refreshed dataset no longer flushes
- *   the other 511.
+ *   dataset it updated or rewrote, so one refreshed dataset no longer flushes
+ *   the other 511. Fields the sync bumps on EVERY pass without changing data
+ *   (`lastCheckedAt`) are read uncached instead (see `getDatasetById`).
  * - No attacker-chosen string ever becomes a cache key. Searches are never
  *   cached; themes and publisher slugs are validated against the cached
  *   theme/publisher lists first; dataset ids and sort columns are validated
@@ -37,6 +38,7 @@
 
 import { Prisma } from "@prisma/client";
 import { unstable_cache } from "next/cache";
+import { cache as requestCache } from "react";
 import { prisma } from "@/lib/prisma";
 import { slugify } from "@/lib/slugify";
 import { escapeLike } from "@/lib/search";
@@ -370,8 +372,24 @@ export async function getDatasetById(id: string): Promise<DatasetDetailRow | nul
     ["dataset-detail", id],
     datasetCache(id),
   );
-  return row ? reviveDetail(row) : null;
+  if (!row) return null;
+  const detail = reviveDetail(row);
+  // "Last checked" is bumped for EVERY dataset on each catalog pass, whether or
+  // not its data changed, and the sync only invalidates the datasets it updated
+  // (that is the point of per-dataset tags). Read it fresh, outside the long-TTL
+  // cache, so the dataset page's timeline never lags a check by up to 30 minutes.
+  return { ...detail, lastCheckedAt: (await readLastCheckedAt(id)) ?? detail.lastCheckedAt };
 }
+
+/** One tiny primary-key read, shared by generateMetadata and the page within a request. */
+const readLastCheckedAt = requestCache(async (id: string): Promise<Date | null> => {
+  try {
+    const row = await prisma.dataset.findUnique({ where: { id }, select: { lastCheckedAt: true } });
+    return row?.lastCheckedAt ?? null;
+  } catch {
+    return null; // fall back to the cached value rather than failing the page for a timestamp
+  }
+});
 
 /** Same-theme-and-publisher first, then same theme, then same publisher; never the dataset itself; live only. */
 export async function getRelatedDatasets(
@@ -880,7 +898,8 @@ export interface SitemapDataset {
 const loadSitemapDatasets = unstable_cache(
   async () =>
     prisma.dataset.findMany({
-      where: { removedAt: null },
+      // Never-synced rows are empty pages: keep them out of what crawlers are told to index.
+      where: { removedAt: null, lastSyncedAt: { not: null } },
       orderBy: { id: "asc" },
       select: { id: true, sourceModified: true, lastSyncedAt: true },
     }),

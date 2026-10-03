@@ -49,7 +49,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 /**
  * The theme is validated against the cached theme list before anything else, so an unknown
  * theme is a genuine HTTP 404. There is deliberately no loading.tsx and no <Suspense> here:
- * either one commits a 200 before `notFound()` can run (see components/skeletons.tsx), and
+ * either one commits a 200 before `notFound()` can run, and
  * streamed content stays hidden for a browser without JavaScript, while this page's filter
  * bar and pager are plain GET forms and links that must work without it. The reads are
  * cache-backed list queries, so there is nothing slow worth a skeleton.

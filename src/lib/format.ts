@@ -5,6 +5,8 @@
  * reinvent it.
  */
 
+import { formatChangePercent } from "@/lib/headline";
+
 const numberFormatter = new Intl.NumberFormat("en-US");
 
 /** All user-facing dates/times are shown in Bahrain local time (UTC+3, no DST). */
@@ -47,10 +49,13 @@ export function formatDateTimeAr(date: Date | string | null | undefined): string
   }).format(d);
 }
 
-/** Percent formatting for the summary/trend lines — Latin digits, one decimal. */
+/**
+ * Percent-change text for the summary/trend lines: Latin digits, one decimal, and
+ * ONE convention shared with the lead sentence and the chart badge (a change that
+ * rounds to 0.0 is "0.0%" with no sign, never "+0.0%" / "-0.0%").
+ */
 export function formatPercent(n: number): string {
-  const sign = n >= 0 ? "+" : "-";
-  return `${sign}${Math.abs(n).toFixed(1)}%`;
+  return formatChangePercent(n).text;
 }
 
 const HTML_ENTITIES: Record<string, string> = {

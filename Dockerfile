@@ -31,15 +31,13 @@
 # (only `.next/cache` is writable), so code execution inside the server cannot
 # rewrite the application or its dependencies.
 #
-# Known, accepted exposure: the overlay also carries sharp + libvips (Next's
-# optional image-optimizer dependency; `pnpm audit --prod` lists high advisories
-# for them) and deepmerge-ts (under prisma's config loader). Neither is
-# reachable: next.config.ts sets images.unoptimized, so /_next/image answers 404
-# before sharp is ever required, and there is no prisma.config.ts for
-# deepmerge-ts to merge. The CI audit step keeps critical advisories blocking
-# and prints the highs as a warning (see .github/workflows/ci.yml). The sharp
-# part is cleared by refreshing the lockfile to sharp >= 0.35.4 (inside Next's
-# own declared range): `pnpm update sharp --depth Infinity`.
+# Known, accepted exposure: the overlay also carries deepmerge-ts (under
+# prisma's config loader; `pnpm audit --prod` lists a high advisory for it). It
+# is unreachable: there is no prisma.config.ts for it to merge, and Prisma 6 has
+# no fixed release. sharp (Next's optional image optimizer) is locked to
+# >= 0.35.4 and next.config.ts sets images.unoptimized, so /_next/image answers
+# 404 before sharp is ever required. The CI audit step keeps critical advisories
+# blocking and prints the highs as a warning (see .github/workflows/ci.yml).
 
 FROM node:22-alpine AS base
 # openssl: required by Prisma's query engine on Alpine/musl.

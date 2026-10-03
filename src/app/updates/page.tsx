@@ -19,7 +19,7 @@ import { EmptyState } from "@/components/empty-state";
 import { FreshnessLine } from "@/components/freshness-line";
 import { NumberLatin } from "@/components/number-latin";
 import { Pagination } from "@/components/pagination";
-import { RefreshButton } from "@/components/refresh-button";
+import { RefreshControl } from "@/components/refresh-control";
 
 interface Props {
   searchParams: Promise<{ days?: string | string[]; page?: string | string[] }>;
@@ -118,7 +118,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
           ]}
           notice={notice}
         />
-        <RefreshButton variant="inline" />
+        <RefreshControl variant="inline" className="print:hidden" />
       </div>
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">

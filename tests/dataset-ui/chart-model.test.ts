@@ -1,3 +1,4 @@
+import { formatCompactAr } from "@/lib/format";
 import { describe, expect, it } from "vitest";
 import {
   OTHER_LABEL,
@@ -99,12 +100,14 @@ describe("canvasSize", () => {
 });
 
 describe("axis numbers", () => {
-  it("is compact from 1,000 up", () => {
+  it("is compact in Arabic units from 1,000 up (one source of truth: formatCompactAr)", () => {
     const f = axisNumberFormatter(1_512_345);
-    expect(f(1_500_000)).toBe("1.5M");
+    expect(f(1_500_000)).toBe(formatCompactAr(1_500_000));
+    expect(f(1_500_000)).toContain("مليون");
+    expect(f(-250_000)).toBe(formatCompactAr(-250_000));
+    expect(f(2000)).toBe(formatCompactAr(2000));
+    expect(f(2000)).not.toMatch(/[KMB]\b/);
     expect(f(0)).toBe("0");
-    expect(f(2000)).toBe("2K");
-    expect(f(-250_000)).toBe("-250K");
   });
 
   it("keeps enough decimals that neighbouring small ticks stay distinct", () => {

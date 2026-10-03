@@ -70,7 +70,7 @@ describe("splitBidiRuns (R5-08: one LTR group per adjacent Latin words and numbe
 describe("MixedBidiText / Bidi markup", () => {
   it("wraps the whole phrase in one dir=ltr span and puts tabular digits on the number only", () => {
     const html = render(createElement(MixedBidiText, { text: "مؤشرات Health 2000" }));
-    expect(html).toBe('مؤشرات <span dir="ltr">Health <span class="tabular-figures">2000</span></span>');
+    expect(html).toBe('مؤشرات <span dir="ltr" lang="en">Health <span class="tabular-figures">2000</span></span>');
   });
 
   it("keeps a purely numeric group as one tabular span, as before", () => {
@@ -78,7 +78,7 @@ describe("MixedBidiText / Bidi markup", () => {
   });
 
   it("is used by Bidi for Arabic text, and Latin-only text stays untouched", () => {
-    expect(render(createElement(Bidi, { text: "مؤشرات Health 2000" }))).toContain('<span dir="ltr">Health ');
+    expect(render(createElement(Bidi, { text: "مؤشرات Health 2000" }))).toContain('<span dir="ltr" lang="en">Health ');
     expect(render(createElement(Bidi, { text: "Health 2000 (Final)" }))).toBe('<bdi dir="auto" lang="en">Health 2000 (Final)</bdi>');
   });
 });

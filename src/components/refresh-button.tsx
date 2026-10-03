@@ -4,6 +4,7 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { formatRelativeAr } from "@/lib/format";
 import { formatSpanAr } from "@/lib/arabic-duration";
+import { NOUNS, countPhrase } from "@/lib/arabic-count";
 
 /**
  * "Check for new data" button — the visitor-facing end of the refresh flow.
@@ -33,11 +34,14 @@ type Phase = "idle" | "working" | "done" | "cooldown" | "error";
 interface FreshnessResponse {
   lastDataChangeAt: string | null;
   lastRunStatus: "success" | "partial" | "failed" | "aborted" | null;
+  /** Counts of the newest finished run: what REALLY happened ("partial" with failures is not "nothing new"). */
+  lastRun?: { id: number; scope: string | null; status: string; updated: number; failed: number; deferred: number } | null;
   running: boolean;
+  runScope?: string | null;
   progress: { done: number; total: number } | null;
   cooldown: { catalogUntil: string | null };
   refreshEnabled: boolean;
-  dataset?: { refreshAvailableAt: string | null; removed: boolean } | null;
+  dataset?: { refreshAvailableAt: string | null; removed: boolean; failed?: boolean; deferred?: boolean } | null;
 }
 
 interface State {
@@ -53,6 +57,18 @@ const POLL_MS = 2_000;
 const POLL_TIMEOUT_MS = 150_000;
 const BUBBLE_MS = 7_000;
 
+/** "N ثانية" up to ~90s, whole minutes beyond (an hour-long limit must not read "3488 ثانية"). */
+function formatWait(seconds: number): string {
+  return seconds <= 90 ? formatSpanAr(seconds) : formatSpanAr(Math.ceil(seconds / 60) * 60);
+}
+
+/** Does a run in progress (by its scope) cover what THIS button asked to refresh? */
+function runCovers(scope: Scope, datasetId: string | undefined, runScope: string | null | undefined): boolean {
+  if (!runScope) return true; // legacy/unknown scope: assume it is the catalog pass
+  if (runScope === "changed" || runScope === "all") return true; // catalog-wide covers everything
+  return scope === "dataset" && runScope === `dataset:${datasetId}`;
+}
+
 const INITIAL: State = { enabled: true, phase: "idle", message: "", progress: null, cooldownUntil: null };
 
 class RefreshStore {
@@ -62,6 +78,10 @@ class RefreshStore {
   private bubbleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastChange: string | null = null;
   private probed = false;
+  /** runId of the run THIS visitor started (from the 202), so the result described is theirs; null when joining someone else's. */
+  private ownRunId: number | null = null;
+  /** The run in progress does not cover what was asked: say so instead of claiming "up to date". */
+  private foreignRun = false;
   /** router.refresh of the most recently mounted button (it is app-global, any instance's works). */
   refreshPage: () => void = () => {};
 
@@ -119,6 +139,8 @@ class RefreshStore {
       }
       this.startCooldown(this.cooldownFrom(data));
       if (data.running && this.state.phase !== "working") {
+        this.ownRunId = null;
+        this.foreignRun = !runCovers(this.scope, this.datasetId, data.runScope);
         this.set({ phase: "working", progress: data.progress });
         this.poll(Date.now());
       }
@@ -138,14 +160,7 @@ class RefreshStore {
           if (data.running) {
             this.set({ progress: data.progress });
           } else {
-            if (data.lastRunStatus === "failed" || data.lastRunStatus === "aborted") {
-              this.settle("error", "تعذّر الوصول إلى المصدر الآن — تُعرض آخر بيانات محفوظة");
-            } else {
-              const changed = data.lastDataChangeAt !== this.lastChange;
-              this.lastChange = data.lastDataChangeAt;
-              this.startCooldown(this.cooldownFrom(data));
-              this.settle("done", changed ? "تم تحديث البيانات" : "البيانات محدّثة بالفعل — لا جديد في المصدر");
-            }
+            this.finish(data);
             this.refreshPage();
             return;
           }
@@ -162,6 +177,63 @@ class RefreshStore {
     this.pollTimer = setTimeout(tick, POLL_MS);
   }
 
+  /** The run has ended: describe what REALLY happened, from the server's counts, not from "nothing changed". */
+  private finish(data: FreshnessResponse) {
+    const run = data.lastRun ?? null;
+    const mine = this.ownRunId !== null && run?.id === this.ownRunId;
+    const foreign = this.foreignRun;
+    this.ownRunId = null;
+    this.foreignRun = false;
+
+    if (data.lastRunStatus === "failed" || data.lastRunStatus === "aborted") {
+      this.settle("error", "تعذّر الوصول إلى المصدر الآن — تُعرض آخر بيانات محفوظة");
+      return;
+    }
+    const changed = data.lastDataChangeAt !== this.lastChange;
+    this.lastChange = data.lastDataChangeAt;
+    this.startCooldown(this.cooldownFrom(data));
+
+    if (foreign && !mine) {
+      // The run that just ended was somebody else's and did not cover this button's scope.
+      this.settle("done", "انتهى تحديث آخر كان قيد التنفيذ — اضغط مجددًا للتحقق من هذه البيانات");
+      return;
+    }
+    if (this.scope === "dataset") {
+      const d = data.dataset;
+      if (d?.deferred) {
+        this.settle("done", "هذه المجموعة كبيرة وستُحدَّث ضمن المزامنة المجدولة، وتُعرض الآن آخر نسخة محفوظة");
+      } else if (d?.failed) {
+        this.settle("error", "تعذّر تحديث هذه المجموعة الآن — تُعرض آخر نسخة محفوظة");
+      } else {
+        this.settle("done", changed ? "تم تحديث البيانات" : "البيانات محدّثة بالفعل — لا جديد في المصدر");
+      }
+      return;
+    }
+    // Catalog-wide: only claim "nothing new" when the run really found nothing to do or to defer.
+    const updated = mine || run ? (run?.updated ?? 0) : changed ? 1 : 0;
+    const failed = run?.failed ?? 0;
+    const deferred = run?.deferred ?? 0;
+    const parts: string[] = [];
+    if (updated > 0) parts.push(`تم تحديث ${countPhrase(updated, NOUNS.dataset)}`);
+    if (deferred > 0) {
+      parts.push(
+        updated > 0
+          ? `وأُجّل ${countPhrase(deferred, NOUNS.dataset)} كبيرة إلى المزامنة المجدولة`
+          : `اكتُشفت بيانات جديدة في ${countPhrase(deferred, NOUNS.dataset, { oblique: true })} كبيرة وستُحدَّث ضمن المزامنة المجدولة`,
+      );
+    }
+    if (failed > 0) {
+      parts.push(
+        parts.length > 0 ? `وتعذّر تحديث ${countPhrase(failed, NOUNS.dataset)}` : `تعذّر تحديث ${countPhrase(failed, NOUNS.dataset)} — تُعرض آخر بيانات محفوظة`,
+      );
+    }
+    if (parts.length > 0) {
+      this.settle(failed > 0 && updated === 0 ? "error" : "done", parts.join(" "));
+    } else {
+      this.settle("done", changed ? "تم تحديث البيانات" : "البيانات محدّثة بالفعل — لا جديد في المصدر");
+    }
+  }
+
   async click(): Promise<void> {
     if (this.state.phase === "working") return;
     this.set({ phase: "working", message: "", progress: null });
@@ -175,8 +247,12 @@ class RefreshStore {
         status?: string;
         retryAfterSeconds?: number;
         checkedAt?: string;
+        runId?: number;
+        runScope?: string | null;
       };
       if (res.status === 202 || (res.ok && (body.status === "started" || body.status === "already_running"))) {
+        this.ownRunId = body.status === "started" && typeof body.runId === "number" ? body.runId : null;
+        this.foreignRun = body.status === "already_running" && !runCovers(this.scope, this.datasetId, body.runScope);
         this.poll(Date.now());
         return;
       }
@@ -188,10 +264,18 @@ class RefreshStore {
         this.refreshPage();
         return;
       }
+      if (res.status === 429 && body.status === "rate_limited") {
+        // Too many presses from this client: nothing was refreshed, so do not say it was
+        // and do not re-render as if someone else had just pulled data in.
+        const wait = Math.max(1, Math.round(body.retryAfterSeconds ?? 3600));
+        this.startCooldown(null, wait);
+        this.settle("cooldown", `تجاوزت الحد المسموح من محاولات التحديث — حاول بعد ${formatWait(wait)}`);
+        return;
+      }
       if (res.status === 429) {
         const wait = Math.max(1, Math.round(body.retryAfterSeconds ?? 60));
         this.startCooldown(null, wait);
-        this.settle("cooldown", `حُدّثت البيانات للتو — يمكنك المحاولة بعد ${formatSpanAr(wait)}`);
+        this.settle("cooldown", `حُدّثت البيانات للتو — يمكنك المحاولة بعد ${formatWait(wait)}`);
         this.refreshPage(); // someone else just refreshed: show what they pulled in
         return;
       }
@@ -302,7 +386,7 @@ export function RefreshButton({
       ? `جارٍ التحديث (${state.progress.done}/${state.progress.total})`
       : "جارٍ التحقق…"
     : isCooling
-      ? `بعد ${formatSpanAr(secondsLeft)}`
+      ? `بعد ${formatWait(secondsLeft)}`
       : idleLabel;
   const showBubble = variant === "header" && state.message !== "";
 
@@ -317,7 +401,7 @@ export function RefreshButton({
         className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-full text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${VARIANT_CLASS[variant]}`}
       >
         <RefreshIcon spinning={working} />
-        <span className={variant === "header" ? "hidden sm:inline" : ""}>{buttonText}</span>
+        <span className={variant === "header" ? "sr-only sm:not-sr-only" : ""}>{buttonText}</span>
       </button>
 
       {/* Always-present live region so assistive tech announces every outcome. */}
@@ -327,7 +411,7 @@ export function RefreshButton({
         className={
           variant === "header"
             ? showBubble
-              ? "absolute end-0 top-full z-50 mt-2 w-max max-w-[16rem] rounded-lg bg-sea-900 px-3 py-2 text-xs font-medium text-sand-50 shadow-lg"
+              ? "pointer-events-none absolute end-0 top-full z-50 mt-2 w-max max-w-[16rem] rounded-lg bg-sea-900 px-3 py-2 text-xs font-medium text-sand-50 shadow-lg"
               : "sr-only"
             : `text-xs ${variant === "hero" ? "text-sand-100/90" : "text-ink/70"} ${state.message ? "" : "sr-only"}`
         }

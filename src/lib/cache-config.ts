@@ -63,7 +63,9 @@ export function isValidDatasetId(id: unknown): id is string {
     typeof id === "string" &&
     id.length > 0 &&
     id.length <= MAX_DATASET_ID_LENGTH &&
-    !/[\u0000-\u001f\u007f]/.test(id)
+    !/[\u0000-\u001f\u007f]/.test(id) &&
+    // A lone UTF-16 surrogate cannot be encoded as UTF-8: Postgres rejects the whole query.
+    !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(id)
   );
 }
 

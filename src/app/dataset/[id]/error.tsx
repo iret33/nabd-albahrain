@@ -8,7 +8,8 @@ import Link from "next/link";
  * visitor inside the site with a retry and the way back to browsing, instead of
  * the generic page error. An error boundary does not touch the HTTP status of a
  * missing dataset (that is `not-found.tsx`, and there is deliberately no
- * route-level `loading.tsx`; see the note in components/skeletons.tsx).
+ * route-level `loading.tsx`: it would commit a 200 first, and its streamed
+ * content stays hidden without JavaScript).
  */
 export default function DatasetError({
   error,

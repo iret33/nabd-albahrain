@@ -8,7 +8,7 @@
  */
 
 import type { VizConfig } from "@/lib/sync/derived";
-import { formatCompact } from "@/lib/format";
+import { formatCompactAr } from "@/lib/format";
 import { seriesColorMap, seriesPalette, TOTAL_SERIES_COLOR } from "@/lib/theme-colors";
 
 /** The bucket that holds the series left out of a bar-stacked chart. */
@@ -59,11 +59,13 @@ export function seriesSpecs(vizConfig: VizConfig, baseColor: string): SeriesSpec
     }
     case "bar-stacked": {
       const keys = vizConfig.seriesValues;
-      const bucketed = vizConfig.otherSeriesBucketed === true && keys[keys.length - 1] === OTHER_LABEL;
+      // The derivation renames its synthetic bucket when a REAL category is already called "أخرى".
+      const otherLabel = vizConfig.otherLabel ?? OTHER_LABEL;
+      const bucketed = vizConfig.otherSeriesBucketed === true && keys[keys.length - 1] === otherLabel;
       const named = bucketed ? keys.slice(0, -1) : keys;
       const palette = seriesPalette(baseColor, named.length);
       const specs: SeriesSpec[] = named.map((key, i) => ({ key, label: key, color: palette[i], total: false }));
-      if (bucketed) specs.push({ key: OTHER_LABEL, label: OTHER_LABEL, color: OTHER_SERIES_COLOR, total: false });
+      if (bucketed) specs.push({ key: otherLabel, label: otherLabel, color: OTHER_SERIES_COLOR, total: false });
       return specs;
     }
     default:
@@ -102,12 +104,12 @@ export function canvasSize(vizConfig: VizConfig, rowCount: number): CanvasSize {
 
 /**
  * Tick formatter for a value axis whose largest magnitude is `maxAbs`: compact
- * ("1.5M") from 1,000 up, otherwise just enough decimals that neighbouring
+ * in Arabic units (formatCompactAr: "1.5 مليون") from 1,000 up, otherwise just enough decimals that neighbouring
  * ticks never print the same label (0.25 must not collapse to "0.3" twice).
  * Latin digits throughout.
  */
 export function axisNumberFormatter(maxAbs: number): (n: number) => string {
-  if (maxAbs >= 1000) return formatCompact;
+  if (maxAbs >= 1000) return formatCompactAr;
   const digits = maxAbs >= 100 ? 0 : maxAbs >= 10 ? 1 : maxAbs >= 1 ? 2 : maxAbs >= 0.01 ? 3 : 4;
   const f = new Intl.NumberFormat("en-US", { maximumFractionDigits: digits });
   return (n) => f.format(n);

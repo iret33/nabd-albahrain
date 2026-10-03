@@ -16,7 +16,8 @@ import {
   Tooltip,
 } from "recharts";
 import type { VizConfig } from "@/lib/sync/derived";
-import { formatCompactAr, formatNumber, formatPeriodLabelAr, formatPeriodTickAr, stripBidiMarks } from "@/lib/format";
+import { formatCompactAr, formatPeriodLabelAr, formatPeriodTickAr, stripBidiMarks } from "@/lib/format";
+import { formatDisplayNumber } from "@/lib/headline";
 import {
   DOT_THRESHOLD,
   OTHER_LABEL,
@@ -122,7 +123,7 @@ function RtlTooltip({ active, payload, label, unit }: RtlTooltipProps) {
               {entry.partial && " (غير مكتملة)"}
             </span>
             <span dir="ltr" className="tabular-figures font-semibold text-ink">
-              {typeof entry.value === "number" ? formatNumber(entry.value) : String(entry.value ?? "")}
+              {typeof entry.value === "number" ? formatDisplayNumber(entry.value) : String(entry.value ?? "")}
               {unit ? ` ${unit}` : ""}
             </span>
           </li>
@@ -343,6 +344,11 @@ function BarHView({ vizConfig, rows, specs, title }: ChartProps) {
   const extent = valueExtent(rows, ["value"], false);
   const format = valueAxisFormat(extent);
   const labels = rows.map((r) => String(r.category ?? ""));
+  // Grey only the synthetic "rest" bucket the derivation added (the flag says it exists; its label
+  // is renamed when a REAL category is already called "أخرى", which must keep its normal colour).
+  const bucketed = "otherBucketed" in vizConfig && vizConfig.otherBucketed === true;
+  const otherLabel = ("otherLabel" in vizConfig ? vizConfig.otherLabel : undefined) ?? OTHER_LABEL;
+  const isOtherBucket = (category: unknown) => bucketed && category === otherLabel;
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart accessibilityLayer title={title} data={rows} layout="vertical" margin={{ top: 10, right: 24, left: 8, bottom: 0 }}>
@@ -361,7 +367,7 @@ function BarHView({ vizConfig, rows, specs, title }: ChartProps) {
         <Tooltip content={<RtlTooltip unit={unit} />} />
         <Bar dataKey="value" name={spec.label} fill={spec.color} radius={[0, 4, 4, 0]} isAnimationActive={false}>
           {rows.map((row, i) => (
-            <Cell key={i} fill={row.category === OTHER_LABEL ? OTHER_SERIES_COLOR : spec.color} />
+            <Cell key={i} fill={isOtherBucket(row.category) ? OTHER_SERIES_COLOR : spec.color} />
           ))}
         </Bar>
       </BarChart>
