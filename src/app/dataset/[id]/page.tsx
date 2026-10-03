@@ -339,7 +339,7 @@ export default async function DatasetPage({ params, searchParams }: Props) {
             label="السجلات"
             value={<NumberLatin value={hasRecords ? dataset.sourceCount : dataset.recordsCount} />}
             note={
-              partial && dataset.recordsCount > dataset.sourceCount ? (
+              partial && dataset.sourceCount > 0 && dataset.recordsCount > dataset.sourceCount ? (
                 <>
                   عُرض <CountNoun n={dataset.sourceCount} forms={NOUNS.record} /> من أصل{" "}
                   <NumberLatin value={dataset.recordsCount} />
