@@ -36,7 +36,8 @@ export function ThemeTile({
       >
         {theme.charAt(0)}
       </span>
-      <Heading className="font-display line-clamp-2 text-lg font-bold text-sea-900">
+      {/* dir="auto" + text-right: see the note in dataset-card.tsx (clamped source-language text). */}
+      <Heading dir="auto" className="font-display line-clamp-2 text-right text-lg font-bold text-sea-900">
         <Bidi text={theme} />
       </Heading>
       <p className="mt-1 text-sm text-ink-muted">

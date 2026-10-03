@@ -51,6 +51,8 @@ export function ListingResults({
   const { params } = result;
   const filters = activeFilters(params, omit);
   const hasFilters = filters.length > 0;
+  /** Filters besides the query itself (the empty state offers to drop exactly these). */
+  const hasOtherFilters = filters.some((f) => f.key !== "q");
   const idle = idleWhenUnfiltered && !hasFilters;
   const resetHref = listHref(basePath, params, { q: "", theme: null, publisher: null, since: null, hasChart: false, sort: null }, omit);
 
@@ -80,9 +82,9 @@ export function ListingResults({
     body = params.q ? (
       <EmptyState
         title="لا توجد نتائج لبحثك — جرّب كلمة أخرى"
-        description={`لم نعثر على مجموعات بيانات تطابق «${params.q}»${hasFilters ? " مع عوامل التصفية المختارة" : ""}. جرّب كلمات أقل أو مرادفًا آخر.`}
+        description={`لم نعثر على مجموعات بيانات تطابق «${params.q}»${hasOtherFilters ? " مع عوامل التصفية المختارة" : ""}. جرّب كلمات أقل أو مرادفًا آخر.`}
       >
-        {filters.some((f) => f.key !== "q") && (
+        {hasOtherFilters && (
           <Link href={listHref(basePath, params, { theme: null, publisher: null, since: null, hasChart: false }, omit)} className={actionLink}>
             إزالة عوامل التصفية
           </Link>
@@ -111,7 +113,7 @@ export function ListingResults({
             <ResultCount total={result.total} />
           </div>
         )}
-        <ul className={GRID}>
+        <ul role="list" className={GRID}>
           {result.items.map((d) => (
             <li key={d.id} className="flex">
               <DatasetCard dataset={d} headingLevel={2} className="w-full" />

@@ -23,7 +23,7 @@ export function Breadcrumb({ theme, items }: { theme?: string | null; items?: Cr
 
   return (
     <nav aria-label="مسار التنقل" className="text-sm text-ink-muted">
-      <ol className="flex flex-wrap items-center gap-x-2">
+      <ol role="list" className="flex flex-wrap items-center gap-x-2">
         {trail.map((crumb, i) => (
           <li key={`${i}-${crumb.label}`} className="flex items-center gap-x-2">
             {i > 0 && <span aria-hidden="true">/</span>}

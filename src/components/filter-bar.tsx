@@ -233,7 +233,7 @@ export function ActiveFilterChips({
             : SINCE_LABELS[f.value as ListSince] ?? f.value;
 
   return (
-    <ul aria-label="عوامل التصفية المطبّقة" className="flex flex-wrap items-center gap-2">
+    <ul role="list" aria-label="عوامل التصفية المطبّقة" className="flex flex-wrap items-center gap-2">
       {filters.map((f) => (
         <li key={f.key}>
           <Link

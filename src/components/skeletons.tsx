@@ -35,23 +35,6 @@ export function CardGridSkeleton({ count = 9 }: { count?: number }) {
   );
 }
 
-/**
- * Filter bar + card grid, the shape of a listing's results. Used as the inline
- * <Suspense> fallback of /categories/[theme] and /publishers/[slug]: those pages
- * validate the theme/slug (a real 404) BEFORE this boundary, so the skeleton
- * can stream without ever committing a 200 for an unknown value.
- */
-export function ListResultsSkeleton({ count = 9 }: { count?: number }) {
-  return (
-    <div aria-hidden="true">
-      <Block className="h-44 w-full rounded-2xl sm:h-32" />
-      <div className="mt-6">
-        <CardGridSkeleton count={count} />
-      </div>
-    </div>
-  );
-}
-
 export function ThemeTileSkeleton() {
   return (
     <div className="rounded-2xl border border-line-light bg-white p-6">
@@ -75,7 +58,7 @@ export function ThemeTileGridSkeleton({ count = 12 }: { count?: number }) {
 export function HeroStatBandSkeleton() {
   return (
     <div className="mt-10 flex flex-wrap gap-x-8 gap-y-6 border-t border-line-dark pt-8">
-      {Array.from({ length: 4 }, (_, i) => (
+      {Array.from({ length: 3 }, (_, i) => (
         <div key={i}>
           <Block className="h-3 w-20 bg-sand-100/20" />
           <Block className="mt-2 h-8 w-16 bg-sand-100/20" />

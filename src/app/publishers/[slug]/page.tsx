@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { THEME_PAGE_SIZE, findPublisher, findTheme, listDatasets } from "@/lib/queries";
@@ -9,7 +8,6 @@ import { Bidi } from "@/components/bidi";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { ListingResults } from "@/components/listing-results";
 import { NumberLatin } from "@/components/number-latin";
-import { ListResultsSkeleton } from "@/components/skeletons";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -38,31 +36,17 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 }
 
 /**
- * Same shape as /categories/[theme] — including the Suspense boundary AFTER the
- * slug check, so an unknown publisher is a true 404 and a known one still
- * shows a skeleton (a route-level loading.tsx would make the 404 a soft 200).
+ * Same shape as /categories/[theme]: the slug is checked against the cached publisher list
+ * first (a true 404 for an unknown one), and there is no loading.tsx or <Suspense> for the
+ * same two reasons (it would soften the 404, and the filter bar/pager must work without JS).
  */
-async function PublisherResults({ slug, input }: { slug: string; input: Parameters<typeof listDatasets>[0] }) {
-  const result = await listDatasets(input);
-  return (
-    <ListingResults
-      result={result}
-      basePath={publisherPath(slug)}
-      omit={["publisher"]}
-      showQuery
-      queryLabel="ابحث في مجموعات هذه الجهة"
-      countOnlyWhenFiltered
-    />
-  );
-}
-
 export default async function PublisherPage({ params, searchParams }: Props) {
   const publisher = await findPublisher((await params).slug);
   if (!publisher) notFound();
 
   const lp = parseListParams(await searchParams);
   const theme = lp.theme ? await findTheme(lp.theme) : null;
-  const input = { ...lp, publisher: publisher.slug, theme: theme ? theme.theme : null };
+  const result = await listDatasets({ ...lp, publisher: publisher.slug, theme: theme ? theme.theme : null });
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
@@ -88,9 +72,14 @@ export default async function PublisherPage({ params, searchParams }: Props) {
       </p>
 
       <div className="mt-8">
-        <Suspense fallback={<ListResultsSkeleton />}>
-          <PublisherResults slug={publisher.slug} input={input} />
-        </Suspense>
+        <ListingResults
+          result={result}
+          basePath={publisherPath(publisher.slug)}
+          omit={["publisher"]}
+          showQuery
+          queryLabel="ابحث في مجموعات هذه الجهة"
+          countOnlyWhenFiltered
+        />
       </div>
     </div>
   );

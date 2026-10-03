@@ -53,7 +53,7 @@ export function Pagination({
 
   return (
     <nav aria-label="ترقيم الصفحات" className="mt-8 flex flex-col items-center gap-4">
-      <ul className="flex flex-wrap items-center justify-center gap-1.5">
+      <ul role="list" className="flex flex-wrap items-center justify-center gap-1.5">
         <li>
           {page > 1 ? (
             <Link href={hrefForPage(page - 1)} rel={rel("prev")} className={`${LINK} gap-1.5`}>

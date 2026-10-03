@@ -54,7 +54,7 @@ export default async function SearchPage({ searchParams }: Props) {
   }
 
   // Re-searching from the box keeps the active filters (but not the page or the sort).
-  const keep = Object.fromEntries(listSearchParams(result.params, {}, ["q", "sort"]));
+  const keep = Object.fromEntries(listSearchParams(result.params, { page: 1 }, ["q", "sort"]));
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">

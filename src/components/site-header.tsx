@@ -48,7 +48,7 @@ export function SiteHeader() {
           aria-label="التنقل الرئيسي"
           className="scrollbar-none order-3 w-full overflow-x-auto sm:order-4 lg:order-2 lg:w-auto lg:overflow-visible"
         >
-          <ul className="flex items-center">
+          <ul role="list" className="flex items-center">
             {NAV_ITEMS.map((item) => (
               <li key={item.href} className="shrink-0">
                 <NavLink href={item.href}>{item.label}</NavLink>

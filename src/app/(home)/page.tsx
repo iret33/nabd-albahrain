@@ -167,7 +167,7 @@ async function LatestDatasetsSection() {
           />
         </div>
       ) : (
-        <ul className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <ul role="list" className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {datasets.map((d) => (
             <li key={d.id} className="flex">
               <DatasetCard dataset={d} headingLevel={3} className="w-full" />

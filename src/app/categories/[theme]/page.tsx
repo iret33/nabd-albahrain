@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { THEME_PAGE_SIZE, findPublisher, findTheme, listDatasets } from "@/lib/queries";
@@ -10,7 +9,6 @@ import { Bidi } from "@/components/bidi";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { ListingResults } from "@/components/listing-results";
 import { NumberLatin } from "@/components/number-latin";
-import { ListResultsSkeleton } from "@/components/skeletons";
 
 interface Props {
   params: Promise<{ theme: string }>;
@@ -49,26 +47,13 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 }
 
 /**
- * The grid lives in its own async component under <Suspense>. The theme is
- * validated (against the cached theme list) BEFORE the boundary, so an unknown
- * theme is a genuine HTTP 404 while a known one still gets a skeleton: a
- * route-level loading.tsx would commit a 200 before `notFound()` could run
- * (see the note in components/skeletons.tsx), which is why this route has none.
+ * The theme is validated against the cached theme list before anything else, so an unknown
+ * theme is a genuine HTTP 404. There is deliberately no loading.tsx and no <Suspense> here:
+ * either one commits a 200 before `notFound()` can run (see components/skeletons.tsx), and
+ * streamed content stays hidden for a browser without JavaScript, while this page's filter
+ * bar and pager are plain GET forms and links that must work without it. The reads are
+ * cache-backed list queries, so there is nothing slow worth a skeleton.
  */
-async function ThemeResults({ theme, input }: { theme: string; input: Parameters<typeof listDatasets>[0] }) {
-  const result = await listDatasets(input);
-  return (
-    <ListingResults
-      result={result}
-      basePath={themePath(theme)}
-      omit={["theme"]}
-      showQuery
-      queryLabel="ابحث في هذه الفئة"
-      countOnlyWhenFiltered
-    />
-  );
-}
-
 export default async function ThemePage({ params, searchParams }: Props) {
   const theme = await findTheme(decodeThemeParam((await params).theme));
   if (!theme) notFound();
@@ -76,7 +61,7 @@ export default async function ThemePage({ params, searchParams }: Props) {
   const lp = parseListParams(await searchParams);
   // A publisher filter from the URL must be a real one (cached list) before it reaches a query.
   const publisher = lp.publisher ? await findPublisher(lp.publisher) : null;
-  const input = { ...lp, theme: theme.theme, publisher: publisher ? lp.publisher : null };
+  const result = await listDatasets({ ...lp, theme: theme.theme, publisher: publisher ? lp.publisher : null });
   const color = themeColor(theme.theme);
 
   return (
@@ -84,9 +69,7 @@ export default async function ThemePage({ params, searchParams }: Props) {
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
-          __html: jsonLd(
-            breadcrumbJsonLd([{ name: "الفئات", path: "/categories" }, { name: theme.theme }]),
-          ),
+          __html: jsonLd(breadcrumbJsonLd([{ name: "الفئات", path: "/categories" }, { name: theme.theme }])),
         }}
       />
       <Breadcrumb
@@ -108,9 +91,14 @@ export default async function ThemePage({ params, searchParams }: Props) {
       </p>
 
       <div className="mt-8">
-        <Suspense fallback={<ListResultsSkeleton />}>
-          <ThemeResults theme={theme.theme} input={input} />
-        </Suspense>
+        <ListingResults
+          result={result}
+          basePath={themePath(theme.theme)}
+          omit={["theme"]}
+          showQuery
+          queryLabel="ابحث في هذه الفئة"
+          countOnlyWhenFiltered
+        />
       </div>
     </div>
   );

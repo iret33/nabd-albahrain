@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import Link from "next/link";
 import { getPortalStats } from "@/lib/queries";
 import { getStaleAfterMs } from "@/lib/sync/config";
@@ -9,11 +8,11 @@ const linkClass = "inline-flex min-h-11 items-center rounded transition-colors h
 
 /**
  * "آخر مزامنة ناجحة" plus an honest notice when the last run failed or the data
- * is stale. Its own async component under <Suspense> so the footer never holds
- * up a page, and wrapped in try/catch because it renders on EVERY page,
- * including the 404 and error pages: a database hiccup must cost this one line,
- * not the whole page (an exception here would be caught by the nearest error
- * boundary and replace the page content).
+ * is stale. A cached read, awaited in place (no <Suspense>: streamed content stays
+ * hidden in a browser without JavaScript), and wrapped in try/catch because it
+ * renders on EVERY page, including the 404 and error pages: a database hiccup
+ * must cost this one line, not the whole page (an exception here would be caught
+ * by the nearest error boundary and replace the page content).
  */
 async function FooterFreshness() {
   try {
@@ -50,7 +49,7 @@ export function SiteFooter() {
     <footer className="border-t border-line-light bg-sand-100">
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
         <nav aria-label="روابط إضافية">
-          <ul className="flex flex-wrap justify-center gap-x-5 text-sm font-medium text-ink/80 sm:justify-start">
+          <ul role="list" className="flex flex-wrap justify-center gap-x-5 text-sm font-medium text-ink/80 sm:justify-start">
             <li>
               <Link href="/categories" className={linkClass}>
                 الفئات
@@ -90,9 +89,7 @@ export function SiteFooter() {
         </nav>
 
         <div className="mt-2 flex min-h-5 justify-center sm:justify-start">
-          <Suspense fallback={null}>
-            <FooterFreshness />
-          </Suspense>
+          <FooterFreshness />
         </div>
 
         <p className="mt-4 text-center text-sm text-ink/80 sm:text-start">

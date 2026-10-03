@@ -43,7 +43,7 @@ function WindowChips({ current }: { current: UpdateWindow }) {
   const options: UpdateWindow[] = [...UPDATE_WINDOWS, "all"];
   return (
     <nav aria-label="الفترة الزمنية">
-      <ul className="flex flex-wrap items-center gap-2">
+      <ul role="list" className="flex flex-wrap items-center gap-2">
         {options.map((w) => {
           const active = w === current;
           return (
@@ -147,11 +147,8 @@ export default async function UpdatesPage({ searchParams }: Props) {
                   >
                     <span className="h-6 w-1.5 shrink-0 rounded-full bg-pearl" aria-hidden="true" />
                     {group.label}
-                    <span className="text-sm font-medium text-ink-muted">
-                      (<NumberLatin value={group.items.length} />)
-                    </span>
                   </h2>
-                  <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                  <ul role="list" className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                     {group.items.map((d) => (
                       <li key={d.id} className="flex">
                         <DatasetCard dataset={d} headingLevel={3} className="w-full" />

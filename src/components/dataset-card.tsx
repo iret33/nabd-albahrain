@@ -79,7 +79,14 @@ export function DatasetCard({
         </div>
       )}
 
-      <Heading className="font-display line-clamp-2 text-base font-bold leading-snug text-sea-900">
+      {/*
+        Titles, subtitle and publisher are source-language text that gets CLAMPED. Clamped text puts its
+        "…" at the end of the block's own direction, so an English title in an RTL block would show the
+        ellipsis at the start of the text. `dir="auto"` gives each block the direction of its text (the
+        ellipsis lands at the right end of English text, the left end of Arabic) and `text-right`
+        keeps every block flush with the card's right edge, which is where this RTL layout starts.
+      */}
+      <Heading dir="auto" className="font-display line-clamp-2 text-right text-base font-bold leading-snug text-sea-900">
         <Link
           href={`/dataset/${encodeURIComponent(dataset.id)}`}
           className="focus-visible:outline-none after:absolute after:inset-0 after:rounded-2xl after:content-['']"
@@ -88,14 +95,12 @@ export function DatasetCard({
         </Link>
       </Heading>
       {subtitle && (
-        <p className="mt-1 line-clamp-1 text-xs text-ink-muted">
-          <bdi lang="en" dir="ltr">
-            {subtitle}
-          </bdi>
+        <p lang="en" dir="ltr" className="mt-1 line-clamp-1 text-right text-xs text-ink-muted">
+          {subtitle}
         </p>
       )}
       {dataset.publisher && (
-        <p className="mt-1 line-clamp-1 text-xs text-ink-muted">
+        <p dir="auto" className="mt-1 line-clamp-1 text-right text-xs text-ink-muted">
           <Bidi text={dataset.publisher} />
         </p>
       )}
