@@ -9,7 +9,7 @@ changed, [CHANGELOG.md](CHANGELOG.md).
 
 **In one paragraph.** The application is feature-complete for its brief: a mirror of the data.gov.bh catalog with
 automatic charts, Arabic search, a public refresh button backed by a scheduler and a freshness system, a public
-JSON API, an admin dashboard, hardened deployment files and CI. It has an automated test suite (2,566 tests) that
+JSON API, an admin dashboard, hardened deployment files and CI. It has an automated test suite (2,569 tests) that
 passes except for one stale integration test, and it was exercised end to end here in a production build against an
 offline mock of the portal. It has **not** been run against the real portal, in a Docker container, or on GitHub
 Actions since the rebuild; those are the first things to do on the VPS (see "Owner actions").
@@ -40,8 +40,8 @@ All run on 2026-10-03 against a scratch Postgres 16, Node 22.22, pnpm 10.28.0.
 | Evidence | Result |
 | --- | --- |
 | `pnpm typecheck`, `pnpm lint` | both exit 0 |
-| `pnpm test` (no database) | **77 test files passed, 11 skipped; 2,323 tests passed, 243 skipped** (88 files, 2,566 tests in all; about 9 s) |
-| `RUN_INTEGRATION=1 pnpm test` against a throwaway migrated database | 88 files, 2,566 tests: **2,565 passed, 1 failed** (about 54 s). The failure is `tests/integration/sync-recompute.test.ts` "--force recomputes datasets that are already current": it expects 9 recomputed datasets, the code now recomputes 10 because zero-row `ok` datasets became eligible (`recompute.ts` says so). A stale test, reproduced when run alone; not a behavior regression. CI would fail on it |
+| `pnpm test` (no database) | 78 test files run and the 11 Postgres-backed ones are skipped (89 files, 2,569 tests in all); about 9 s |
+| `RUN_INTEGRATION=1 pnpm test` on a CLEAN clone against an EMPTY database (the exact CI sequence: `pnpm install --frozen-lockfile` with its `postinstall`, `prisma generate`, `prisma migrate deploy`, typecheck, lint, test, `pnpm build` with no env file or tokens, `pnpm audit --prod --audit-level=critical`) | **89 files, 2,569 tests, all passed** (about 54 s); typecheck and lint clean; build succeeded; the audit gate exited 0 with 1 accepted high advisory (`deepmerge-ts`, unreachable). Run by the integrator after the last code change; GitHub Actions itself was **not** run |
 | `prisma validate`; `pnpm db:deploy` on an empty database; `prisma migrate diff` (migrated DB vs `schema.prisma`); `pnpm db:migrate` on an empty database | valid; all 6 migrations apply; empty diff ("This is an empty migration"); applies and reports "in sync" with no prompt and no new migration |
 | `pnpm build` (no env, no network) | succeeds; 34 entries in the route table; the build needs no secrets and no font host |
 | Production build served with `node .next/standalone/server.js` against the offline mock portal (`pnpm mock:ods`) | exercised: first sync through `node dist/sync-cli.cjs`; incremental, `--dry-run`, `--recompute`; a simulated pre-freshness database repaired by one recompute and one sync; every documented route of the README API reference with the status codes, headers and bodies quoted there (400, 401, 403, 404, 409 cursor_expired, 429 rate limits with `Retry-After`, 202/200 refresh outcomes incl. `up_to_date`, `already_running` and a **deferred** large dataset, kill switch 503, CSV with BOM, HEAD, CORS preflight, `/_next/image` 404); admin cookie rules (a bare cookie POST is 401, `cross-site` 401, `same-origin` 202, the old `admin_token` cookie and a forged cookie are redirected to login) |

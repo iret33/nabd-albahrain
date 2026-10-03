@@ -141,7 +141,7 @@ stage 3 fixes" commit (2026-10-03). The build log of the first nine phases is in
 - `.gitattributes` forces LF (a CRLF checkout would break the entrypoint and migrations).
 - An offline mock of the portal (`pnpm mock:ods`) with modes that simulate publishing,
   removal, truncation, slow and failing exports.
-- Test suite: 88 test files, 2,566 tests (2,323 run without a database).
+- Test suite: 89 test files, 2,569 tests (the Postgres-backed integration tests run with `RUN_INTEGRATION=1`).
 
 ## Documentation
 
