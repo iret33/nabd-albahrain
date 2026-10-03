@@ -7,6 +7,12 @@
   --sand-50: #f7f3ec;
   --sand-100: #ede7da;
   --ink: #17262a;
+  /*
+   * Informational text (counts, dates, labels, intros). Replaces the old
+   * `text-ink/40..60` washes, which measured 2.4-4.2:1. Computed: 6.4:1 on
+   * white, 5.8:1 on sand-50, 5.2:1 on sand-100 (all >= 4.5:1, WCAG AA).
+   */
+  --ink-muted: #52616a;
   --pearl: #c9a961;
   --coral: #a6473f;
   --line-dark: rgba(237, 231, 218, 0.14);
@@ -22,6 +28,7 @@
   --color-sand-50: var(--sand-50);
   --color-sand-100: var(--sand-100);
   --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
   --color-pearl: var(--pearl);
   --color-coral: var(--coral);
   --color-line-dark: var(--line-dark);
@@ -57,16 +64,49 @@ body {
   }
 }
 
-/* Visible keyboard focus states */
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-[tabindex]:focus-visible {
-  outline: 2px solid var(--pearl);
-  outline-offset: 2px;
-  border-radius: 4px;
+/*
+ * Base-layer rules, so Tailwind utilities (`focus:outline-none` on <main>,
+ * `focus-visible:outline-pearl` on the skip link, ...) can still override them;
+ * an unlayered rule would beat every utility regardless of specificity.
+ */
+@layer base {
+  /*
+   * The header is only sticky from `lg` up (on phones it would eat a fifth of
+   * the viewport), so anchors and focus-driven scrolling only need to clear it
+   * there. 6rem covers the one-row header with room to spare.
+   */
+  html {
+    scroll-padding-top: 1rem;
+  }
+  @media (min-width: 1024px) {
+    html {
+      scroll-padding-top: 6rem;
+    }
+  }
+
+  /*
+   * Visible keyboard focus: a 2px sea-900 ring (15:1 on sand and white, well over
+   * the 3:1 non-text minimum). No border-radius override: modern browsers curve
+   * the outline along the element's own radius, so pills stay pills. Programmatic
+   * focus targets (`tabindex="-1"`, e.g. <main> after the skip link) get no ring.
+   */
+  :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid var(--sea-900);
+    outline-offset: 2px;
+  }
+
+  /* On the dark sea bands sea-900 would vanish; pearl is 7.5:1 there. */
+  .surface-dark :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline-color: var(--pearl);
+  }
+}
+
+/* Horizontally scrollable rows (mobile nav) without a visible scrollbar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Pearl lattice divider — fading dot-grid, masked to fade downward */
