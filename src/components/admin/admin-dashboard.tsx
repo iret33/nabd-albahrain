@@ -527,7 +527,7 @@ export function AdminDashboard({
           )}
         </div>
         {!showAllRuns && quietPublicPresses > 0 && (
-          <p className="mt-1 text-xs text-ink/50" data-testid="hidden-runs-note">
+          <p className="mt-1 text-xs text-ink/70" data-testid="hidden-runs-note">
             مخفية: {countPhrase(quietPublicPresses, PRESS)} من زر التحديث العام لم تغيّر أي بيانات. تظهر هنا الضغطات
             الفاشلة والجزئية وكل ضغطة حدّثت بيانات.
           </p>
@@ -563,7 +563,7 @@ export function AdminDashboard({
                   return (
                     <tr
                       key={log.id}
-                      className={`border-b border-line-light align-top last:border-0${quiet ? " opacity-60" : ""}`}
+                      className="border-b border-line-light align-top last:border-0"
                       data-quiet-press={quiet ? "true" : undefined}
                     >
                       <td className="px-4 py-3 text-sea-900">{formatDateTimeAr(log.startedAt)}</td>
@@ -582,6 +582,11 @@ export function AdminDashboard({
                       <td className="px-4 py-3 text-ink/70">
                         {describeTrigger(log.trigger)}
                         {scope && <p className="mt-0.5 max-w-[14rem] truncate text-xs text-ink/40" title={scope}>{scope}</p>}
+                        {quiet && (
+                          <span className="mt-1 inline-block rounded-full bg-ink/10 px-2 py-0.5 text-[11px] font-medium text-ink/70">
+                            ضغطة بلا تغيير
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-ink/70">
                         <span dir="ltr" className="tabular-figures">

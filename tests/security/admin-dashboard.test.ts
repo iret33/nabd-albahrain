@@ -105,6 +105,9 @@ describe("admin run history toggle", () => {
     expect(html).toContain("إخفاء ضغطات التحديث العامة بلا تغيير");
     expect(html).not.toContain('data-testid="hidden-runs-note"');
     expect(html.match(/data-quiet-press="true"/g)).toHaveLength(1);
+    // Marked with a text badge, not by dimming the row (a dimmed row fails WCAG contrast).
+    expect(html.match(/ضغطة بلا تغيير/g)).toHaveLength(1);
+    expect(html).not.toContain("opacity-60");
   });
 
   it("keeps public failures, partials and presses that changed data unmarked", () => {
