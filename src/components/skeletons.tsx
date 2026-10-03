@@ -58,7 +58,7 @@ export function ThemeTileGridSkeleton({ count = 12 }: { count?: number }) {
 export function HeroStatBandSkeleton() {
   return (
     <div className="mt-10 flex flex-wrap gap-x-8 gap-y-6 border-t border-line-dark pt-8">
-      {Array.from({ length: 4 }, (_, i) => (
+      {Array.from({ length: 3 }, (_, i) => (
         <div key={i}>
           <Block className="h-3 w-20 bg-sand-100/20" />
           <Block className="mt-2 h-8 w-16 bg-sand-100/20" />

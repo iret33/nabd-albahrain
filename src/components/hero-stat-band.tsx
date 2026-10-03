@@ -16,23 +16,33 @@ export interface HeroStatItem {
  * where all items fit on one row) leaves a dangling vertical hairline on
  * whichever item wraps onto its own new row at narrow widths, since that
  * item's right border no longer sits next to a right-hand neighbor.
+ *
+ * `footer` is a full-width row under a hairline for what is not a number:
+ * the home page puts the freshness line and the refresh button there.
  */
-export function HeroStatBand({ items }: { items: HeroStatItem[] }) {
+export function HeroStatBand({ items, footer }: { items: HeroStatItem[]; footer?: ReactNode }) {
   return (
-    <dl className="mt-10 flex flex-col gap-6 border-t border-line-dark pt-8 sm:flex-row sm:flex-wrap sm:gap-x-8 sm:gap-y-6">
-      {items.map((item, i) => (
-        <div
-          key={item.label}
-          className={
-            i > 0
-              ? "border-t border-line-dark pt-6 sm:border-t-0 sm:border-r sm:pt-0 sm:pr-8"
-              : undefined
-          }
-        >
-          <dt className="text-xs font-medium text-sand-100/60">{item.label}</dt>
-          <dd className="mt-1 font-display text-3xl font-bold">{item.value}</dd>
+    <div className="mt-10 border-t border-line-dark pt-8">
+      <dl className="flex flex-col gap-6 sm:flex-row sm:flex-wrap sm:gap-x-8 sm:gap-y-6">
+        {items.map((item, i) => (
+          <div
+            key={item.label}
+            className={
+              i > 0
+                ? "border-t border-line-dark pt-6 sm:border-t-0 sm:border-r sm:pt-0 sm:pr-8"
+                : undefined
+            }
+          >
+            <dt className="text-xs font-medium text-sand-100/75">{item.label}</dt>
+            <dd className="mt-1 font-display text-3xl font-bold">{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {footer && (
+        <div className="mt-8 flex flex-col gap-4 border-t border-line-dark pt-6 sm:flex-row sm:items-center sm:justify-between">
+          {footer}
         </div>
-      ))}
-    </dl>
+      )}
+    </div>
   );
 }

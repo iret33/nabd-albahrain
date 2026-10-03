@@ -1,25 +1,22 @@
-import type { Metadata } from "next";
 import { getPublisherCounts } from "@/lib/queries";
+import { listingMetadata } from "@/lib/seo";
 import { PublisherTile } from "@/components/publisher-tile";
 import { EmptyState } from "@/components/empty-state";
 
-export const metadata: Metadata = {
-  title: "الجهات الحكومية | نبض البحرين",
+export const metadata = listingMetadata({
+  title: "الجهات الحكومية",
   description: "كل الجهات الحكومية الناشرة لبيانات مفتوحة في بوابة data.gov.bh لمملكة البحرين.",
-};
+  path: "/publishers",
+});
 
-// Phase 8 fix: without this, `next build` tries to statically prerender
-// this DB-backed route at *build* time, which requires a live DATABASE_URL
-// — broke the Docker build. See the longer explanation on `src/app/(home)/page.tsx`.
-export const dynamic = "force-dynamic";
-
+/** No route-level loading.tsx: it would also wrap /publishers/[slug] and soften its 404. */
 export default async function PublishersPage() {
   const publishers = await getPublisherCounts();
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
       <h1 className="font-display text-3xl font-black text-sea-900">الجهات الحكومية</h1>
-      <p className="mt-2 max-w-2xl text-sm leading-7 text-ink/60">
+      <p className="mt-2 max-w-2xl text-sm leading-7 text-ink-muted">
         كل الجهات الحكومية التي تنشر مجموعات بيانات مفتوحة في بوابة data.gov.bh — اختر جهة
         لاستعراض مجموعاتها.
       </p>
@@ -31,11 +28,13 @@ export default async function PublishersPage() {
             description="لم تُستورد بيانات الجهات الناشرة من data.gov.bh حتى الآن. عد لاحقًا بعد اكتمال المزامنة."
           />
         ) : (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <ul role="list" className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {publishers.map((p) => (
-              <PublisherTile key={p.slug} slug={p.slug} name={p.name} count={p.count} />
+              <li key={p.slug}>
+                <PublisherTile slug={p.slug} name={p.name} count={p.count} />
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
     </div>
