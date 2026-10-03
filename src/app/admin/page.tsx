@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { getAdminStats, getAllDatasetsForAdmin, getRecentSyncLogs } from "@/lib/admin/queries";
+import { getAdminFreshness, getAdminStats, getAllDatasetsForAdmin, getRecentSyncLogs } from "@/lib/admin/queries";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { getLockState } from "@/lib/sync/lock";
 import { AdminDashboard } from "@/components/admin/admin-dashboard";
 import { logoutAction } from "./login/actions";
@@ -11,14 +12,20 @@ export const metadata: Metadata = {
 };
 
 export default async function AdminPage() {
-  const [stats, datasets, logs, lock] = await Promise.all([
+  // Middleware already guards /admin; verify again here so a middleware
+  // bypass cannot expose the dashboard on its own.
+  await requireAdmin();
+
+  const [stats, freshness, datasets, logs, lock] = await Promise.all([
     getAdminStats(),
+    getAdminFreshness(),
     getAllDatasetsForAdmin(),
     getRecentSyncLogs(20),
     getLockState(),
   ]);
 
-  const failures = datasets.filter((d) => d.syncStatus === "error");
+  // Removed datasets' stale errors are not actionable; only live ones are retry candidates.
+  const failures = datasets.filter((d) => d.syncStatus === "error" && !d.removedAt);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
@@ -29,7 +36,14 @@ export default async function AdminPage() {
           </button>
         </form>
       </div>
-      <AdminDashboard stats={stats} failures={failures} logs={logs} datasets={datasets} initialLock={lock} />
+      <AdminDashboard
+        stats={stats}
+        freshness={freshness}
+        failures={failures}
+        logs={logs}
+        datasets={datasets}
+        initialLock={lock}
+      />
     </div>
   );
 }
