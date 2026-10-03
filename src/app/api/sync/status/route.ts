@@ -3,8 +3,8 @@
  * Polled by the `/admin` dashboard every 3s while a sync is (or might be)
  * running. Same combined auth as `POST /api/sync` — see
  * `src/lib/sync/auth.ts` — though in practice the admin dashboard's poll
- * relies on the `admin_token` cookie it already carries, not a bearer
- * header.
+ * relies on the signed admin-session cookie it already carries
+ * (`ADMIN_COOKIE_NAME` in `src/lib/admin-session.ts`), not a bearer header.
  *
  * Shape: `{ lock, latestLog }`. `lock` is `{ running, since, heartbeatAt,
  * stale }` (stale = the holder's heartbeat is older than 10 minutes, i.e. a

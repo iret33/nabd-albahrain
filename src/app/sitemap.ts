@@ -22,19 +22,11 @@ import { SITE_URL } from "@/lib/site";
  * the dataset list), so a crawler hitting /sitemap.xml costs no database work
  * between refreshes.
  *
- * `dynamic = "force-dynamic"` (Phase 8 fix — this route had no such
- * export before and Next.js therefore tried to prerender it as static
- * output at *build* time, which requires a live `DATABASE_URL` to be
- * reachable during `next build`/`docker build` — a build step should
- * never depend on a running production database, and indeed this broke
- * the Phase 8 Docker build outright: `next build` failed prerendering
- * `/sitemap.xml` with `PrismaClientInitializationError: Environment
- * variable not found: DATABASE_URL`, since no DB is (or should be)
- * reachable inside the image build. Forcing this dynamic also happens to
- * be the more correct behavior anyway — the sitemap is entirely
- * DB-derived and changes as the catalog syncs, so it should never have
- * been baked in as static output from whatever data happened to exist at
- * build time.
+ * `dynamic = "force-dynamic"`: the sitemap is entirely DB-derived and changes
+ * as the catalog syncs, and without the export `next build` would prerender it
+ * at build time, which needs a reachable `DATABASE_URL` (a build must never
+ * depend on a running database; `docker build` failed on exactly this with
+ * `PrismaClientInitializationError`). Do not remove the export.
  */
 export const dynamic = "force-dynamic";
 

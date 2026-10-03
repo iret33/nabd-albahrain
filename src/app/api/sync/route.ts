@@ -3,9 +3,11 @@
  * the admin dashboard).
  *
  * Auth: `Authorization: Bearer $SYNC_TOKEN` (the spec'd contract for
- * external/scripted callers), OR the `admin_token` cookie set by
- * `/admin/login` (lets the browser-based admin dashboard call this exact
- * endpoint without ever seeing `SYNC_TOKEN` — see `src/lib/sync/auth.ts`).
+ * external/scripted callers), OR the signed admin-session cookie set by
+ * `/admin/login` (`ADMIN_COOKIE_NAME` in `src/lib/admin-session.ts`; lets the
+ * browser-based admin dashboard call this exact endpoint without ever seeing
+ * `SYNC_TOKEN`). A cookie-authenticated POST must also be same-origin, and
+ * failed attempts are throttled (401, then 429): see `src/lib/sync/auth.ts`.
  *
  * Query params:
  *   ?dataset=<id>   only re-sync this one dataset (one catalog-entry request,

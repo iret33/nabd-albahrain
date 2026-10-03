@@ -7,9 +7,11 @@ import path from "node:path";
  * hydration payload (`self.__next_f.push(...)` inline scripts) without a
  * per-request nonce — a nonce would force every route to render dynamically.
  * Styles need it for Recharts and React `style={{...}}` props. Everything else
- * is same-origin: fonts are self-hosted by next/font at build time, there is no
- * third-party script, image or XHR, and `<script type="application/ld+json">`
- * is non-executable data that CSP does not govern.
+ * is same-origin: the fonts are local files (`src/app/fonts`, emitted under
+ * `/_next/static/media` by `next/font/local`, no font host is contacted at
+ * build or run time), there is no third-party script, image or XHR, and
+ * `<script type="application/ld+json">` is non-executable data that CSP does
+ * not govern.
  */
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
