@@ -40,6 +40,23 @@ export function rateLimit(key: string, opts: { limit: number; windowMs: number }
   };
 }
 
+/**
+ * Read a key's state WITHOUT counting a hit. For "N failures then lock out"
+ * flows (login, sync-API 401s): peek before checking the credential, then call
+ * `rateLimit()` only when it was wrong. `ok` is true while another attempt is
+ * still allowed, i.e. fewer than `limit` hits are recorded in the live window.
+ */
+export function peekRateLimit(key: string, opts: { limit: number; windowMs: number }, now = Date.now()): RateLimitResult {
+  const bucket = buckets.get(key);
+  if (!bucket || bucket.resetAt <= now) return { ok: true, remaining: opts.limit, retryAfterSeconds: 0 };
+  const ok = bucket.count < opts.limit;
+  return {
+    ok,
+    remaining: Math.max(0, opts.limit - bucket.count),
+    retryAfterSeconds: ok ? 0 : Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+  };
+}
+
 /** Forget a key (e.g. after a successful login). */
 export function resetRateLimit(key: string): void {
   buckets.delete(key);

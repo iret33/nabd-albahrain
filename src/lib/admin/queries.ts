@@ -9,34 +9,79 @@
 
 import { prisma } from "@/lib/prisma";
 
+/** The SyncLog columns the dashboard reads (see `status` semantics in `sync-status.ts`). */
+export interface AdminSyncLogRow {
+  id: number;
+  trigger: string;
+  startedAt: Date;
+  finishedAt: Date | null;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  status: string;
+  /** Sanitized top-level failure message of a failed/aborted run. */
+  error: string | null;
+  total: number;
+  skipped: number;
+  updated: number;
+  scope: string | null;
+}
+
+const SYNC_LOG_SELECT = {
+  id: true,
+  trigger: true,
+  startedAt: true,
+  finishedAt: true,
+  processed: true,
+  succeeded: true,
+  failed: true,
+  status: true,
+  error: true,
+  total: true,
+  skipped: true,
+  updated: true,
+  scope: true,
+} as const;
+
 export interface AdminStats {
+  /** Datasets currently on the portal (removed ones are counted separately). */
   total: number;
   ok: number;
   partial: number;
   error: number;
   pending: number;
-  lastSync: {
-    startedAt: Date;
-    finishedAt: Date | null;
-    processed: number;
-    succeeded: number;
-    failed: number;
-  } | null;
+  /** Datasets a complete catalog pass no longer lists (`Dataset.removedAt` set). */
+  removed: number;
+  lastSync: AdminSyncLogRow | null;
 }
 
 export async function getAdminStats(): Promise<AdminStats> {
-  const [total, ok, partial, error, pending, lastSync] = await Promise.all([
-    prisma.dataset.count(),
-    prisma.dataset.count({ where: { syncStatus: "ok" } }),
-    prisma.dataset.count({ where: { syncStatus: "partial" } }),
-    prisma.dataset.count({ where: { syncStatus: "error" } }),
-    prisma.dataset.count({ where: { syncStatus: "pending" } }),
-    prisma.syncLog.findFirst({
-      orderBy: { startedAt: "desc" },
-      select: { startedAt: true, finishedAt: true, processed: true, succeeded: true, failed: true },
-    }),
+  const active = { removedAt: null } as const;
+  const [total, ok, partial, error, pending, removed, lastSync] = await Promise.all([
+    prisma.dataset.count({ where: active }),
+    prisma.dataset.count({ where: { ...active, syncStatus: "ok" } }),
+    prisma.dataset.count({ where: { ...active, syncStatus: "partial" } }),
+    prisma.dataset.count({ where: { ...active, syncStatus: "error" } }),
+    prisma.dataset.count({ where: { ...active, syncStatus: "pending" } }),
+    prisma.dataset.count({ where: { removedAt: { not: null } } }),
+    prisma.syncLog.findFirst({ orderBy: { startedAt: "desc" }, select: SYNC_LOG_SELECT }),
   ]);
-  return { total, ok, partial, error, pending, lastSync };
+  return { total, ok, partial, error, pending, removed, lastSync };
+}
+
+export interface AdminFreshness {
+  lastCatalogCheckAt: Date | null;
+  lastSuccessAt: Date | null;
+  lastDataChangeAt: Date | null;
+}
+
+/** Portal-wide freshness bookkeeping (the `SyncState` singleton); all-null before the first run. */
+export async function getAdminFreshness(): Promise<AdminFreshness> {
+  const row = await prisma.syncState.findUnique({
+    where: { id: 1 },
+    select: { lastCatalogCheckAt: true, lastSuccessAt: true, lastDataChangeAt: true },
+  });
+  return row ?? { lastCatalogCheckAt: null, lastSuccessAt: null, lastDataChangeAt: null };
 }
 
 export interface AdminDatasetRow {
@@ -49,6 +94,7 @@ export interface AdminDatasetRow {
   lastSyncedAt: Date | null;
   recordsCount: number;
   sourceCount: number;
+  removedAt: Date | null;
 }
 
 const ADMIN_DATASET_SELECT = {
@@ -61,9 +107,10 @@ const ADMIN_DATASET_SELECT = {
   lastSyncedAt: true,
   recordsCount: true,
   sourceCount: true,
+  removedAt: true,
 } as const;
 
-/** Every dataset, for the searchable list — filtering happens client-side (512 rows total, no pagination needed). */
+/** Every dataset (removed ones flagged), for the searchable list — filtering happens client-side (512 rows total, no pagination needed). */
 export async function getAllDatasetsForAdmin(): Promise<AdminDatasetRow[]> {
   return prisma.dataset.findMany({
     orderBy: [{ titleClean: "asc" }, { id: "asc" }],
@@ -71,28 +118,10 @@ export async function getAllDatasetsForAdmin(): Promise<AdminDatasetRow[]> {
   });
 }
 
-export interface AdminSyncLogRow {
-  id: number;
-  trigger: string;
-  startedAt: Date;
-  finishedAt: Date | null;
-  processed: number;
-  succeeded: number;
-  failed: number;
-}
-
 export async function getRecentSyncLogs(limit = 20): Promise<AdminSyncLogRow[]> {
   return prisma.syncLog.findMany({
     orderBy: { startedAt: "desc" },
     take: limit,
-    select: {
-      id: true,
-      trigger: true,
-      startedAt: true,
-      finishedAt: true,
-      processed: true,
-      succeeded: true,
-      failed: true,
-    },
+    select: SYNC_LOG_SELECT,
   });
 }
