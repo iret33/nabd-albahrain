@@ -101,6 +101,13 @@ describe("openGraphFor / absoluteUrl", () => {
     expect(og).toMatchObject({ type: "website", siteName: "نبض البحرين", locale: "ar_BH", title: "آخر التحديثات | نبض البحرين" });
   });
 
+  it("names the brand image explicitly (a page-level openGraph/twitter object would otherwise drop it)", () => {
+    const og = openGraphFor({ title: "x", description: "d", path: "/x" });
+    expect(og.images).toEqual([{ url: "/opengraph-image.png", width: 1200, height: 630, alt: expect.any(String) }]);
+    const m = listingMetadata({ title: "x", description: "d", path: "/x" });
+    expect(m.twitter).toMatchObject({ card: "summary_large_image", images: [{ url: "/twitter-image.png", width: 1200, height: 630 }] });
+  });
+
   it("does not repeat the brand for the home page title", () => {
     expect(openGraphFor({ title: "نبض البحرين", description: "d", path: "/" }).title).toBe("نبض البحرين | Nabd Al-Bahrain");
   });

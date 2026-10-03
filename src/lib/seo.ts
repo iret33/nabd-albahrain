@@ -50,6 +50,16 @@ export function alternatesFor(canonicalPath: string): NonNullable<Metadata["alte
   return { canonical: canonicalPath, types: FEED_ALTERNATE };
 }
 
+/**
+ * The brand card (src/app/opengraph-image.png and twitter-image.png, both 1200x630).
+ * The file conventions attach these to every route that does NOT set its own
+ * `openGraph`/`twitter`; a page that does replaces the whole object and would
+ * lose the image, so the builders below name it explicitly (URLs resolve
+ * against `metadataBase`).
+ */
+export const OG_IMAGE = { url: "/opengraph-image.png", width: 1200, height: 630, alt: `${SITE_NAME} — ${SITE_NAME_EN}` } as const;
+export const TWITTER_IMAGE = { url: "/twitter-image.png", width: 1200, height: 630, alt: `${SITE_NAME} — ${SITE_NAME_EN}` } as const;
+
 export function openGraphFor(input: { title: string; description: string; path: string }): NonNullable<Metadata["openGraph"]> {
   return {
     type: "website",
@@ -58,6 +68,7 @@ export function openGraphFor(input: { title: string; description: string; path: 
     title: input.title === SITE_NAME ? DEFAULT_TITLE : `${input.title} | ${SITE_NAME}`,
     description: input.description,
     url: input.path,
+    images: [OG_IMAGE],
   };
 }
 
@@ -93,7 +104,12 @@ export function listingMetadata(input: ListingMetadataInput): Metadata {
     description: input.description,
     alternates: alternatesFor(canonical),
     openGraph: openGraphFor({ title, description: input.description, path: canonical }),
-    twitter: { card: "summary_large_image", title: `${title} | ${SITE_NAME}`, description: input.description },
+    twitter: {
+      card: "summary_large_image",
+      title: `${title} | ${SITE_NAME}`,
+      description: input.description,
+      images: [TWITTER_IMAGE],
+    },
     ...(input.noindex ? { robots: NOINDEX_FOLLOW } : {}),
   };
 }
