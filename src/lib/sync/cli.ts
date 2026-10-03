@@ -12,6 +12,7 @@
  * "aborted" and the lock released before the process exits.
  */
 
+import "./load-env"; // must stay first: the imports below read the environment as they load
 import { parseArgs, USAGE, type CliOptions } from "./cli-args";
 import { runSync } from "./engine";
 import { SyncAlreadyRunningError } from "./lock";

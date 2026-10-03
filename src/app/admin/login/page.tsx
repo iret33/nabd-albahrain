@@ -5,7 +5,7 @@ import { loginErrorMessage } from "@/lib/admin/login-errors";
 import { loginAction } from "./actions";
 
 export const metadata: Metadata = {
-  title: "دخول لوحة الإدارة | نبض البحرين",
+  title: "دخول لوحة الإدارة",
   robots: { index: false, follow: false },
 };
 

@@ -15,7 +15,7 @@ import { logoutAction } from "./login/actions";
 
 export const dynamic = "force-dynamic"; // always read current DB state, no caching
 export const metadata: Metadata = {
-  title: "لوحة الإدارة | نبض البحرين",
+  title: "لوحة الإدارة",
   robots: { index: false, follow: false },
 };
 
