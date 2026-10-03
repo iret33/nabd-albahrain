@@ -1,0 +1,88 @@
+# Dependabot version updates. Security updates are separate (a repository
+# setting) and are not limited by the `ignore` rules below.
+#
+# Pinning: .github/workflows/ci.yml references actions by major tag. Pinning
+# them to commit SHAs is left to the owner (the SHAs have to be copied from the
+# upstream release pages); once pinned as `uses: owner/repo@<sha> # vX.Y.Z`,
+# the github-actions entry below updates the SHA and the comment together.
+# Base images are pinned by tag (node:22-alpine, postgres:16-alpine) on purpose:
+# the floating tags deliver upstream security patches on every rebuild; a digest
+# pin without an updater would freeze them, so pin by digest only together with
+# the `docker` entry below.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # Handles pnpm-lock.yaml. Does not bump the `packageManager` field.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Next and its eslint config are released (and pinned) together.
+      next:
+        patterns: ["next", "eslint-config-next"]
+      prisma:
+        patterns: ["prisma", "@prisma/client"]
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Deliberate pins: a major bump is a migration, not a routine update.
+      # Open it by hand when planned (Dependabot security updates still apply).
+      - dependency-name: next
+        update-types: ["version-update:semver-major"]
+      - dependency-name: eslint-config-next
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: prisma
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+      # Types must track the Node major the image runs (engines: >=22, node:22-alpine).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # API-breaking majors of libraries the UI and API code are written against.
+      - dependency-name: recharts
+        update-types: ["version-update:semver-major"]
+      - dependency-name: zod
+        update-types: ["version-update:semver-major"]
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+
+  # The Dockerfile's base image. postgres:16-alpine lives in docker-compose.yml
+  # and is deliberately NOT tracked: a major bump against an existing pgdata
+  # volume breaks startup, and the same-major tag already floats.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    ignore:
+      # Node major is chosen by hand together with `engines` in package.json.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "docker"
