@@ -98,10 +98,30 @@ describe("loadPublicRefreshConfig", () => {
     });
   });
 
-  it("only PUBLIC_REFRESH_ENABLED=0 disables it", () => {
-    expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: "0" }).enabled).toBe(false);
-    expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: "1" }).enabled).toBe(true);
+  it("the kill switch takes the spellings an operator types: 0/false/no/off (any case, padded) disable it", () => {
+    for (const off of ["0", "false", "no", "off", "FALSE", " Off ", "No"]) {
+      expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: off }).enabled, off).toBe(false);
+    }
+    for (const on of ["1", "true", "yes", "on", "TRUE", " On "]) {
+      expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: on }).enabled, on).toBe(true);
+    }
+  });
+
+  it("unset or blank leaves it enabled (the default); an unrecognised value FAILS CLOSED with one warning", () => {
+    expect(loadPublicRefreshConfig({}).enabled).toBe(true);
     expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: "" }).enabled).toBe(true);
+    expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: "   " }).enabled).toBe(true);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const odd of ["2", "maybe", "disabled", "of"]) {
+        expect(loadPublicRefreshConfig({ PUBLIC_REFRESH_ENABLED: odd }).enabled, odd).toBe(false);
+      }
+      expect(warn).toHaveBeenCalledTimes(1); // once per variable, not per call
+      expect(String(warn.mock.calls[0][0])).toContain("PUBLIC_REFRESH_ENABLED");
+      expect(String(warn.mock.calls[0][0])).toContain("false/no/off");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("reads cooldowns and the row cap", () => {

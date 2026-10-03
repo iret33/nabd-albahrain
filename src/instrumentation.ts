@@ -16,7 +16,7 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     if (process.env.NEXT_PHASE === "phase-production-build") return;
 
-    const { assertProductionEnv } = await import("@/lib/env");
+    const { assertProductionEnv, poolSizingWarning, productionEnvWarnings } = await import("@/lib/env");
     try {
       assertProductionEnv();
     } catch (err) {
@@ -25,6 +25,14 @@ export async function register() {
       // (Docker restart policy, systemd) surfaces the misconfiguration.
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);
+    }
+
+    // Findings that must be loud but must not stop the boot (a hard failure
+    // would break proxy-less `compose up` and one-off sync containers).
+    const { availableParallelism } = await import("node:os");
+    const pool = process.env.NODE_ENV === "production" ? poolSizingWarning(process.env, availableParallelism()) : null;
+    for (const warning of [...productionEnvWarnings(), ...(pool ? [pool] : [])]) {
+      console.warn(`[config] WARNING: ${warning}`);
     }
 
     const { startScheduler } = await import("@/lib/sync/scheduler");

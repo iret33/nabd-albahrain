@@ -155,11 +155,19 @@ describe("authorizeSyncRequest", () => {
     if (blocked.ok || blocked.status !== 429) throw new Error("expected 429");
     expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
 
-    // Even the right token is refused while locked out (that is what stops brute force)...
-    const right = await authorizeSyncRequest(req({ headers: { authorization: `Bearer ${SYNC_TOKEN}` } }), ENV);
-    expect(right).toMatchObject({ ok: false, status: 429 });
+    // Wrong guesses stay locked out (that is what throttles guessing)...
+    expect(await bad()).toMatchObject({ ok: false, status: 429 });
+    expect(await authorizeSyncRequest(req({ headers: { authorization: `Bearer ${SYNC_TOKEN}x` } }), ENV)).toMatchObject({
+      ok: false,
+      status: 429,
+    });
 
-    // ...but another client is unaffected, and so is an admin session from the locked-out one.
+    // ...but the CORRECT token is not throttled: a 256-bit secret cannot be brute-forced, and gating it
+    // let anonymous junk starve the app's own cache invalidation and the owner's cron.
+    const right = await authorizeSyncRequest(req({ headers: { authorization: `Bearer ${SYNC_TOKEN}` } }), ENV);
+    expect(right).toEqual({ ok: true, via: "bearer" });
+
+    // Another client is unaffected, and so is an admin session from the locked-out one.
     const other = new Request("http://localhost:3104/api/sync", {
       method: "POST",
       headers: { "cf-connecting-ip": `198.51.100.${n}`, authorization: `Bearer ${SYNC_TOKEN}` },
@@ -168,6 +176,41 @@ describe("authorizeSyncRequest", () => {
     const session = await createSession(ADMIN_TOKEN);
     const viaSession = req({ headers: { cookie: `${ADMIN_COOKIE_NAME}=${session}`, "sec-fetch-site": "same-origin" } });
     expect((await authorizeSyncRequest(viaSession, ENV)).ok).toBe(true);
+  });
+
+  it("anonymous junk from the SHARED client key cannot starve the app's own cache-invalidation call or the cron (throttle-starves-valid-credentials)", async () => {
+    // TRUST_PROXY unset / 'true' / 'yes' -> every caller shares the key "local", and the engine's notify and a
+    // host cron send no forwarding headers at all.
+    for (const proxy of [undefined, "true", "yes", "0"]) {
+      vi.unstubAllEnvs();
+      if (proxy !== undefined) vi.stubEnv("TRUST_PROXY", proxy);
+      resetRateLimit("sync-api:local");
+      const anonymous = () => new Request("http://127.0.0.1:3000/api/sync/status", { method: "GET" });
+      for (let i = 0; i < SYNC_API_FAILURE_LIMIT.limit + 5; i++) await authorizeSyncRequest(anonymous(), ENV);
+      expect(await authorizeSyncRequest(anonymous(), ENV), String(proxy)).toMatchObject({ ok: false, status: 429 });
+
+      const notify = new Request("http://127.0.0.1:3000/api/revalidate", {
+        method: "POST",
+        headers: { authorization: `Bearer ${SYNC_TOKEN}`, "content-type": "application/json" },
+      });
+      expect(await authorizeSyncRequest(notify, ENV), String(proxy)).toEqual({ ok: true, via: "bearer" });
+    }
+  });
+
+  it("a correct token costs nothing against the failure budget, and a wrong one made after it still counts", async () => {
+    const right = () => authorizeSyncRequest(req({ headers: { authorization: `Bearer ${SYNC_TOKEN}` } }), ENV);
+    const wrong = () => authorizeSyncRequest(req({ headers: { authorization: "Bearer nope" } }), ENV);
+    for (let i = 0; i < 50; i++) expect((await right()).ok).toBe(true);
+    for (let i = 0; i < SYNC_API_FAILURE_LIMIT.limit; i++) expect(await wrong()).toEqual({ ok: false, status: 401 });
+    expect(await wrong()).toMatchObject({ ok: false, status: 429 });
+  });
+
+  it("stays closed without a configured token, and compares in constant time either way", async () => {
+    for (const env of [{}, { SYNC_TOKEN: "" }, { SYNC_TOKEN: undefined }]) {
+      expect((await authorizeSyncRequest(req({ headers: { authorization: "Bearer " } }), env)).ok).toBe(false);
+      expect((await authorizeSyncRequest(req({ headers: { authorization: "Bearer x" } }), env)).ok).toBe(false);
+      expect((await authorizeSyncRequest(req(), env)).ok).toBe(false);
+    }
   });
 
   it("builds JSON 401 and 429 responses", async () => {
