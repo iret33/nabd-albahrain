@@ -3,6 +3,7 @@ import { listingMetadata } from "@/lib/seo";
 import { SITE_URL } from "@/lib/site";
 import { API_LIST_DEFAULT_LIMIT, API_LIST_MAX_LIMIT, API_RECORDS_DEFAULT_LIMIT, API_RECORDS_MAX_LIMIT } from "@/lib/api-v1";
 import { API_CSV_BUDGET, API_READ_BUDGET, CSV_MAX_CONCURRENT, CSV_MAX_PER_CLIENT } from "@/lib/api-limits";
+import { countPhrase, type NounForms } from "@/lib/arabic-count";
 import { MAX_ROWS_HARD_CAP, MAX_ROWS_STORED_WHEN_CAPPED } from "@/lib/row-limits";
 import { PearlLattice } from "@/components/pearl-lattice";
 
@@ -12,6 +13,12 @@ export const metadata = listingMetadata({
     "واجهة JSON عامة ومجانية للقراءة فقط لكتالوج مجموعات البيانات المفتوحة لمملكة البحرين وسجلاتها، مع تصدير CSV وترقيم بالمؤشر.",
   path: "/developers",
 });
+
+// The documented budgets are read from the code (`@/lib/api-limits`), so this page cannot drift from what the
+// server enforces; the counted nouns agree with the number whatever it is (1 / 2 / 3-10 / 11+).
+const REQUEST: NounForms = { one: "طلب", oneNumber: "واحد", dual: "طلبان", dualOblique: "طلبين", few: "طلبات", many: "طلبًا" };
+const EXPORT: NounForms = { one: "تصدير", oneNumber: "واحد", dual: "تصديران", dualOblique: "تصديرين", few: "تصديرات", many: "تصديرًا" };
+const MINUTE: NounForms = { one: "دقيقة", oneNumber: "واحدة", dual: "دقيقتان", dualOblique: "دقيقتين", few: "دقائق", many: "دقيقةً" };
 
 const linkClass =
   "font-medium text-sea-900 underline decoration-pearl decoration-2 underline-offset-4 transition-colors hover:text-coral";
@@ -103,11 +110,12 @@ export default function DevelopersPage() {
             مع الخادم: استخدم <Inline>limit</Inline> الأكبر المسموح بدل آلاف الطلبات الصغيرة، ولا تُعد الطلب نفسه في حلقة ضيقة.
           </p>
           <p id="limits">
-            حدود الاستخدام لكل عميل: حتى {API_READ_BUDGET.limit} طلبًا في الدقيقة على كل المسارات. وتصدير CSV له حصة أصغر:{" "}
-            {API_CSV_BUDGET.limit} تصديرًا كل {API_CSV_BUDGET.windowMs / 60_000} دقائق، وتصديران متزامنان كحدٍّ أقصى لكل عميل (و
-            {CSV_MAX_CONCURRENT} على الخادم كله). عند تجاوز الحد تصلك استجابة JSON برمز <Inline>429</Inline> (أو{" "}
-            <Inline>503</Inline> إن كان الخادم مشغولًا بتصديرات غيرك) ورأس <Inline>Retry-After</Inline> بعدد الثواني: انتظرها ثم أعد
-            المحاولة. لا تُخزَّن هذه الردود مؤقتًا.
+            حدود الاستخدام لكل عميل: حتى {countPhrase(API_READ_BUDGET.limit, REQUEST)} في الدقيقة على كل المسارات. وتصدير CSV له حصة أصغر:{" "}
+            {countPhrase(API_CSV_BUDGET.limit, EXPORT)} كل {countPhrase(API_CSV_BUDGET.windowMs / 60_000, MINUTE, { oblique: true })}، ولا يجري في
+            الوقت نفسه أكثر من {countPhrase(CSV_MAX_PER_CLIENT, EXPORT, { oblique: true })} لكل عميل، ولا أكثر من{" "}
+            {countPhrase(CSV_MAX_CONCURRENT, EXPORT, { oblique: true })} على الخادم كله. عند تجاوز الحد تصلك استجابة JSON برمز{" "}
+            <Inline>429</Inline> (أو <Inline>503</Inline> إن كان الخادم مشغولًا بتصديرات غيرك) ورأس <Inline>Retry-After</Inline> بعدد الثواني:
+            انتظرها ثم أعد المحاولة. لا تُخزَّن هذه الردود مؤقتًا.
           </p>
         </section>
 
@@ -242,7 +250,7 @@ curl -OJ "${base}/datasets/live-births-by-governorate/records?format=csv"`}</Cod
               الأخطاء JSON دائمًا بالشكل التالي، ولا تتضمن تفاصيل داخلية: <Inline>400</Inline> لقيمة بارامتر غير صالحة (يُسمّى البارامتر في{" "}
               <Inline>parameter</Inline>)، و<Inline>404</Inline> لمجموعة أو فئة أو جهة غير موجودة، و<Inline>409</Inline> لمؤشر{" "}
               <Inline>after</Inline> قديم (<Inline>cursor_expired</Inline>، ابدأ من <Inline>restart</Inline>)، و<Inline>429</Inline> حين تتجاوز
-              حدّك ({CSV_MAX_PER_CLIENT} تصديرات متزامنة لكل عميل أو حصة الطلبات؛ انتظر <Inline>Retry-After</Inline> ثانية)، و<Inline>503</Inline>{" "}
+              حدّك (حصة الطلبات، أو تصدير CSV آخر في الوقت نفسه من العميل ذاته؛ انتظر <Inline>Retry-After</Inline> ثانية)، و<Inline>503</Inline>{" "}
               حين يمتلئ الخادم بتصديرات غيرك، و<Inline>500</Inline> لعطل في الخادم. لا يُخزَّن أي خطأ مؤقتًا.
             </p>
             <Code>{`HTTP/1.1 400 Bad Request

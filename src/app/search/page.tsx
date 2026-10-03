@@ -84,7 +84,11 @@ export default async function SearchPage({ searchParams }: Props) {
         </p>
       )}
 
-      <div className="mt-8">
+      {/* The same property on the results area (it is inherited) covers the places the user's own text is
+          echoed there: the active-query chip and the empty-state sentence. A pasted URL of 100 characters
+          otherwise pushed the whole page, header included, to ~900px wide on a 360px phone. Checked: results
+          and the pager at 320/360 px render byte-identical screenshots with and without it. */}
+      <div className="mt-8 [overflow-wrap:anywhere]">
         <ListingResults result={result} basePath="/search" idleWhenUnfiltered />
       </div>
     </div>

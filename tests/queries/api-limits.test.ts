@@ -104,11 +104,14 @@ describe("acquireCsvSlot: concurrent exports", () => {
 
   it("a finished export gives its slot back to the client", () => {
     const ip = fresh();
-    const a = acquire(ip) as { release: () => void };
-    acquire(ip);
+    const taken = Array.from({ length: CSV_MAX_PER_CLIENT }, () => acquire(ip) as { release: () => void });
     expect(acquire(ip)).toBeInstanceOf(Response);
-    a.release();
+    taken[0].release();
     expect(acquire(ip)).not.toBeInstanceOf(Response);
+  });
+
+  it("no client can ever hold every server slot: the per-client share is below the global cap", () => {
+    expect(CSV_MAX_PER_CLIENT).toBeLessThan(CSV_MAX_CONCURRENT);
   });
 
   it("answers 503 (the server's fault, not the client's) when every slot is taken by OTHER clients", async () => {

@@ -1221,28 +1221,41 @@ describe.skipIf(!RUN)("queries (integration)", () => {
       it("CSV: the slot is held until the body is finished or cancelled, never just until the Response exists", async () => {
         await seedRecords(`${F2}slot`, 2500);
         const ip = freshIp();
-        const a = await call(`${F2}slot`, "?format=csv", ip);
-        const b = await call(`${F2}slot`, "?format=csv", ip);
-        expect([a.status, b.status]).toEqual([200, 200]);
-        expect(limits.csvStreamsInFlight()).toBe(2); // two Response objects exist, two slots are held (run() would have said 0)
+        const { CSV_MAX_PER_CLIENT, CSV_MAX_CONCURRENT } = limits;
+        const mine = [];
+        for (let i = 0; i < CSV_MAX_PER_CLIENT; i++) {
+          const res = await call(`${F2}slot`, "?format=csv", ip);
+          expect(res.status).toBe(200);
+          mine.push(res);
+        }
+        // The Response objects exist (the old run(() => new Response(...)) would already have freed the slots).
+        expect(limits.csvStreamsInFlight()).toBe(CSV_MAX_PER_CLIENT);
 
-        const c = await call(`${F2}slot`, "?format=csv", ip);
-        expect(c.status).toBe(429); // this client already has its two
-        expect(c.headers.get("retry-after")).toBeTruthy();
-        expect(c.headers.get("cache-control")).toBe("no-store");
-        expect(((await c.json()) as { error: string }).error).toBe("rate_limited");
+        const refused = await call(`${F2}slot`, "?format=csv", ip);
+        expect(refused.status).toBe(429); // this client already has its share
+        expect(refused.headers.get("retry-after")).toBeTruthy();
+        expect(refused.headers.get("cache-control")).toBe("no-store");
+        expect(((await refused.json()) as { error: string }).error).toBe("rate_limited");
 
-        // A different client is still served (the cap is per client, then global).
-        const other = await call(`${F2}slot`, "?format=csv", freshIp());
-        expect(other.status).toBe(200);
-        await other.body?.cancel();
+        // Other clients are still served, up to the server-wide cap; the next one is told the SERVER is full (503).
+        const others: Response[] = [];
+        while (limits.csvStreamsInFlight() < CSV_MAX_CONCURRENT) {
+          const res = await call(`${F2}slot`, "?format=csv", freshIp());
+          expect(res.status).toBe(200);
+          others.push(res);
+        }
+        const full = await call(`${F2}slot`, "?format=csv", freshIp());
+        expect(full.status).toBe(503);
+        expect(full.headers.get("retry-after")).toBeTruthy();
+        expect(((await full.json()) as { error: string }).error).toBe("server_busy");
 
-        await a.body?.cancel(); // the client hangs up: Next calls cancel() on the body
-        await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(1));
-        const d = await call(`${F2}slot`, "?format=csv", ip);
-        expect(d.status).toBe(200);
-        await d.body?.cancel();
-        await b.body?.cancel();
+        for (const res of others) await res.body?.cancel();
+        await mine[0].body?.cancel(); // the client hangs up: Next calls cancel() on the body
+        await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(CSV_MAX_PER_CLIENT - 1));
+        const again = await call(`${F2}slot`, "?format=csv", ip);
+        expect(again.status).toBe(200); // the slot really came back
+        await again.body?.cancel();
+        for (const res of mine.slice(1)) await res.body?.cancel();
         await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(0));
       });
 

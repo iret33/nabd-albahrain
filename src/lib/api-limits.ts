@@ -36,9 +36,15 @@ import { serverBusy, tooManyRequests } from "@/lib/api-v1";
 export const API_READ_BUDGET = { limit: 120, windowMs: 60_000 } as const;
 /** CSV exports a client may START per ten minutes. Behind CGNAT many people share an address, so not tiny. */
 export const API_CSV_BUDGET = { limit: 30, windowMs: 600_000 } as const;
-/** Concurrent CSV streams per client / per server. */
-export const CSV_MAX_PER_CLIENT = 2;
-export const CSV_MAX_CONCURRENT = 4;
+/**
+ * Concurrent CSV streams per client / per server. Deliberately small: a stream is CPU-bound on the one
+ * Node thread that also renders every page. Measured on a 300,000-row dataset (4-core box, /about as
+ * the probe): idle 17 ms; one stream p50 30 / p95 60 ms; two p50 86 / p95 340 ms; four p50 461 / p95
+ * 689 ms; twenty uncapped p50 2,076 ms. Two keeps the rest of the site fast, and a client holds at
+ * most one of them so it can never take both.
+ */
+export const CSV_MAX_PER_CLIENT = 1;
+export const CSV_MAX_CONCURRENT = 2;
 /** When clients cannot be told apart, every budget is this many times larger (the one shared bucket stands for everyone). */
 export const UNKNOWN_CLIENT_FACTOR = 10;
 

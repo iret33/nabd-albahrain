@@ -9,6 +9,10 @@ import {
   removeFilterHref,
   sinceCutoff,
 } from "@/lib/list-query";
+import { MAX_THEME_LENGTH } from "@/lib/cache-config";
+import { MAX_PUBLISHER_SLUG_LENGTH } from "@/lib/slugify";
+import { metadataFromCatalogEntry } from "@/lib/sync/metadata";
+import { parseCatalogEntry } from "@/lib/sync/schemas";
 
 describe("parseListParams", () => {
   it("returns safe defaults for an empty query string", () => {
@@ -129,6 +133,35 @@ describe("buildListParams", () => {
   it("ignores caller-supplied tokens (always derived from q)", () => {
     const p = buildListParams({ q: "water", tokens: ["evil"] } as never);
     expect(p.tokens).toEqual(["water"]);
+  });
+
+  it("keeps every theme the sync can store (up to 200 characters) EXACTLY, so an exact lookup still finds it (R2-06)", () => {
+    for (const length of [1, 99, 100, 101, 150, 199, 200]) {
+      const theme = `${"x".repeat(length - 1)}ص`;
+      expect(buildListParams({ theme }).theme, `length ${length}`).toBe(theme);
+      expect(buildListParams(buildListParams({ theme })).theme).toBe(theme); // idempotent
+    }
+    expect(buildListParams({ theme: "y".repeat(500) }).theme).toHaveLength(MAX_THEME_LENGTH); // hostile input is still capped
+    expect(parseListParams(new URLSearchParams({ theme: "z".repeat(150) })).theme).toBe("z".repeat(150));
+  });
+
+  it("the theme and slug caps are the ones the writer and the lookups use (one source of truth)", () => {
+    expect(buildListParams({ publisher: "p".repeat(500) }).publisher).toHaveLength(MAX_PUBLISHER_SLUG_LENGTH);
+  });
+
+  it("whatever theme the SYNC stores survives the listing parser unchanged (the writer/reader limits cannot drift apart again)", () => {
+    for (const length of [100, 101, 150, 200, 250, 5000]) {
+      const parsed = parseCatalogEntry({
+        dataset_id: "d",
+        fields: [],
+        metas: { default: { title: "T", theme: [`  ${"t".repeat(length)}  `], records_count: 1 } },
+      });
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) continue;
+      const stored = metadataFromCatalogEntry(parsed.entry).theme as string;
+      expect(stored.length).toBeLessThanOrEqual(MAX_THEME_LENGTH); // the writer's cap IS the shared constant
+      expect(buildListParams({ theme: stored }).theme, `length ${length}`).toBe(stored);
+    }
   });
 
   it("sanitizes non-integer / unsafe pages", () => {
