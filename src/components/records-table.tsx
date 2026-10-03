@@ -112,7 +112,7 @@ export function RecordsTable({
   return (
     <div id="records" className="scroll-mt-24">
       <form
-        action={`/dataset/${encodeURIComponent(datasetId)}`}
+        action={`/dataset/${encodeURIComponent(datasetId)}#records`}
         method="GET"
         role="search"
         aria-label="البحث في سجلات المجموعة"
