@@ -75,8 +75,7 @@ the version that field names). Postgres 16 with the `pg_trgm` extension (any rol
 it, and a database for Prisma's shadow database if you use `db:migrate`).
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm db:generate      # generate the Prisma client: with pnpm 10 `pnpm install` does not (typecheck, tests, dev, sync fail without it)
+pnpm install --frozen-lockfile      # its postinstall runs `prisma generate` (the Prisma client)
 cp .env.example .env
 ```
 
@@ -122,15 +121,15 @@ included:
 
 ```bash
 pnpm mock:ods                                                       # terminal 1, port 4010 (MOCK_ODS_PORT)
-set -a; . ./.env; set +a                                            # terminal 2: export the variables
-export ODS_BASE_URL=http://127.0.0.1:4010/api/explore/v2.1          # (or put it in .env first)
+echo 'ODS_BASE_URL=http://127.0.0.1:4010/api/explore/v2.1' >> .env  # terminal 2: point the sync at the mock
 pnpm sync                                                           # incremental sync; also: pnpm sync -- --limit 10
 ```
 
 Against the real portal leave `ODS_BASE_URL` unset and run `pnpm sync -- --limit 10` first, then
-`pnpm sync`. **The sync CLI does not read `.env` or `.env.local`** (tsx and Prisma's client load no env file;
-only the Prisma *CLI* reads `.env`, never `.env.local`), so export the variables as above or use
-`pnpm exec tsx --env-file=.env src/lib/sync/cli.ts <flags>`. Quality gate: `pnpm check` (typecheck, lint, tests).
+`pnpm sync`. The sync CLI loads `.env.local` and then `.env` from the working directory (real environment
+variables win, then `.env.local`, then `.env`), the way the web app does. The Prisma *CLI* (`pnpm db:deploy`,
+`db:migrate`, `db:studio`) reads `.env` only, never `.env.local`, so keep `DATABASE_URL` in `.env`; `pnpm test` reads
+no env file. Quality gate: `pnpm check` (typecheck, lint, tests).
 
 ## Configuration
 

@@ -46,7 +46,7 @@ All run on 2026-10-03 against a scratch Postgres 16, Node 22.22, pnpm 10.28.0.
 | `pnpm build` (no env, no network) | succeeds; 34 entries in the route table; the build needs no secrets and no font host |
 | Production build served with `node .next/standalone/server.js` against the offline mock portal (`pnpm mock:ods`) | exercised: first sync through `node dist/sync-cli.cjs`; incremental, `--dry-run`, `--recompute`; a simulated pre-freshness database repaired by one recompute and one sync; every documented route of the README API reference with the status codes, headers and bodies quoted there (400, 401, 403, 404, 409 cursor_expired, 429 rate limits with `Retry-After`, 202/200 refresh outcomes incl. `up_to_date`, `already_running` and a **deferred** large dataset, kill switch 503, CSV with BOM, HEAD, CORS preflight, `/_next/image` 404); admin cookie rules (a bare cookie POST is 401, `cross-site` 401, `same-origin` 202, the old `admin_token` cookie and a forged cookie are redirected to login) |
 | Boot validation | a `dev-*` token, identical tokens, `TRUST_PROXY=true`, `SYNC_CONCURRENCY=0` and `PUBLIC_REFRESH_ENABLED=maybe` each print the problem list and **exit 1**; unset `TRUST_PROXY` and a pool of 3 print `[config] WARNING` lines and still boot; `PUBLIC_REFRESH_ENABLED=false` is accepted |
-| Clean clone (`git clone --no-hardlinks`, no `node_modules`, no `.env`) following the README's local-development steps | works **after adding `pnpm db:generate`** (a fresh `pnpm install --frozen-lockfile` does not generate the Prisma client, see "Known issues"); then `pnpm db:deploy`, mock + `pnpm sync`, `pnpm dev` (home, dataset page and API answered 200), `pnpm check` all pass |
+| Clean clone (`git clone --no-hardlinks`, no `node_modules`, no `.env`) following the README's local-development steps | worked after a manual `pnpm db:generate` (found here; a `postinstall: prisma generate` was added afterwards, so a plain `pnpm install` now generates the client); then `pnpm db:deploy`, mock + `pnpm sync`, `pnpm dev` (home, dataset page and API answered 200), `pnpm check` all pass |
 | `docker compose config` (with `.env.example` copied to `.env`), with and without the dev override; YAML parse of the CI and Dependabot files | exit 0: production publishes only `app` on `127.0.0.1:3000`, `db` publishes nothing; with the override `db` publishes `127.0.0.1:5432`; `GIT_SHA` reaches the build args, `connection_limit=12` reaches `DATABASE_URL`. No Docker daemon was available |
 | `pnpm audit --prod` | 1 high (`deepmerge-ts` via Prisma's config loader, unreachable, no fix on Prisma 6); `sharp` is 0.35.5 |
 | The real portal, earlier (Phase 8/9, **before the rebuild**) | a real full sync of 512 datasets (507 ok, 5 partial, 1,212,280 stored rows, about 6 min 38 s) and a Docker image run were recorded then; those numbers are historical and cannot be re-verified from this repository |
@@ -78,20 +78,19 @@ All run on 2026-10-03 against a scratch Postgres 16, Node 22.22, pnpm 10.28.0.
 6. Decide whether you want server-side session revocation or per-user admin accounts (today: one shared token, 12 h
    signed cookie, rotate the token to revoke).
 7. After any `DERIVED_VERSION` bump, force-sync each `partial` dataset (the recompute log lists them).
-8. Developer follow-ups from this documentation pass: fix the stale recompute test; make a fresh clone work without a
-   manual `pnpm db:generate`; consider loading `.env` in the sync CLI (see Known issues).
+8. Developer follow-ups found by the documentation pass and since fixed: the stale recompute test, the missing Prisma
+   client after a fresh `pnpm install` (now a `postinstall`), and the sync CLI ignoring env files (it now loads
+   `.env.local` then `.env`).
 
 ## Known issues and limitations
 
-Bugs and sharp edges found while documenting (not fixed: this pass changed documentation and comments only):
+Bugs and sharp edges found while documenting:
 
-- **Stale integration test** (above): `RUN_INTEGRATION=1 pnpm test` fails with 1 test, so CI's `check` job would be red.
-- **A fresh clone's `pnpm install --frozen-lockfile` does not generate the Prisma client** (pnpm 10.28.0; no "ignored
-  build scripts" notice either). `pnpm typecheck`, `pnpm test`, `pnpm dev` and `pnpm sync` then fail until
-  `pnpm db:generate`. CI and the Dockerfile run `prisma generate` explicitly, so they are unaffected. The cause is not
-  confirmed (pnpm-workspace.yaml uses `allowBuilds`; pnpm 10's documented setting is `onlyBuiltDependencies`).
-- **`pnpm sync` (and `pnpm test`) read no env file**, `.env` included; the Prisma CLI reads `.env` only and never
-  `.env.local`. The previous `.env.example` told developers to use `.env.local`. Documented workarounds in the README.
+- **Fixed after the documentation pass found them:** the recompute integration test (zero-row datasets are now
+  recomputed on purpose), the Prisma client missing after a fresh `pnpm install` (a `postinstall: prisma generate` now
+  runs; the `allowBuilds` key in `pnpm-workspace.yaml` is still not pnpm 10's documented setting
+  (`onlyBuiltDependencies`), which is harmless today because nothing depends on dependency build scripts), and
+  `pnpm sync` ignoring `.env` / `.env.local` (the CLI now loads them without overriding real environment variables).
 - **A malformed `%`-sequence in an `/api/` path** (for example `/api/v1/datasets/%E0%A4%A`) is answered with Next.js's own
   bare English HTML 400 page, not JSON (the middleware matcher excludes `api/`); page paths get the Arabic 404.
 - **`robots.txt` is static**: its `Sitemap:` line uses the *build-time* `NEXT_PUBLIC_SITE_URL` (observed here: it named
