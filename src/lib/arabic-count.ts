@@ -30,6 +30,8 @@ export const NOUNS = {
   record: { one: "سجل", oneNumber: "واحد", dual: "سجلان", dualOblique: "سجلين", few: "سجلات", many: "سجلًا" },
   field: { one: "حقل", oneNumber: "واحد", dual: "حقلان", dualOblique: "حقلين", few: "حقول", many: "حقلًا" },
   category: { one: "فئة", oneNumber: "واحدة", dual: "فئتان", dualOblique: "فئتين", few: "فئات", many: "فئةً" },
+  /** A table row of a dataset (distinct from "record", the catalog's own word for one entry). */
+  row: { one: "صف", oneNumber: "واحد", dual: "صفان", dualOblique: "صفين", few: "صفوف", many: "صفًا" },
 } as const satisfies Record<string, NounForms>;
 
 const grouped = new Intl.NumberFormat("en-US");

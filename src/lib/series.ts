@@ -4,10 +4,12 @@
  * `src/lib/chart-data.ts`). Nothing here imports from either of them, so the
  * rules below cannot drift between "what we persisted" and "what we show":
  *
- *   1. Total-row / total-series detection (two tiers, see below).
+ *   1. Total-row / total-series detection (two label tiers, plus a numeric
+ *      "this value is the sum of its siblings" check for what labels miss).
  *   2. Token-aware aggregate inference (sum vs. mean).
  *   3. Period arithmetic (year / month), cadence detection and gap filling.
- *   4. Partial-trailing-period detection.
+ *   4. Partial-trailing-period detection (row coverage + calendar).
+ *   5. Name predicates: identifier-like measures, non-additive series names.
  */
 
 export type Grain = "year" | "month";
@@ -119,6 +121,137 @@ export function pickTotalSeriesKey(values: readonly string[]): string | null {
   return findTotalSeries(values).key;
 }
 
+/**
+ * Labels that OFTEN name a whole ("All", "All nationalities", "Both sexes",
+ * "Kingdom of Bahrain", "جميع الجنسيات", "المملكة") but can also be a legitimate
+ * part ("Bahrain" as a nationality, "Both" as a category). They are CANDIDATES
+ * only: nothing is ever dropped or treated as a total because of the label
+ * alone, it must also pass the numeric check below (`findNumericTotalSeries`,
+ * `totalCellsAgree`).
+ */
+const EXTENDED_CANDIDATE_RES: RegExp[] = [
+  /^all(?: [a-z][a-z ]*)?$/,
+  /^both(?: sexes| sex| genders)?$/,
+  /^(?:kingdom|kingdom of bahrain|bahrain|whole country|entire country|national|nationwide|whole population)$/,
+  /^(?:جميع|كل|كافة) .+$/,
+  /^(?:الكل|كلا الجنسين|الجنسين|المملكة|مملكة البحرين|البحرين)$/,
+];
+
+/**
+ * A value that may be the total of its siblings: a loose total label ("Total
+ * (all)", "Total Population", "Passengers Total") or one of the extended
+ * candidates above, but NOT a strict total (those are accepted by label alone).
+ */
+export function isTotalCandidateLabel(label: string): boolean {
+  if (typeof label !== "string" || label.length === 0 || label.length > 60) return false;
+  if (isStrictTotalLabel(label)) return false;
+  if (isLooseTotalLabel(label)) return true;
+  const norm = normalizeTotalLabel(label);
+  return EXTENDED_CANDIDATE_RES.some((re) => re.test(norm));
+}
+
+/** Relative tolerance for "the total equals the sum of its parts" (published parts drift by rounding). */
+const TOTAL_REL_TOLERANCE = 0.005;
+/** Share of the compared cells that must agree. */
+const TOTAL_QUORUM = 0.8;
+/** At least this many cells (periods) must be compared before anything is called a total. */
+const TOTAL_MIN_CELLS = 3;
+
+function sumTolerance(total: number, siblings: number, allIntegers: boolean): number {
+  // Integer parts were each rounded, so the sum can drift by up to half a unit per part.
+  return Math.max(Math.abs(total) * TOTAL_REL_TOLERANCE, allIntegers ? 0.5 * siblings : 0);
+}
+
+/**
+ * Among `keys` (the series of a chart), the ONE whose values equal the sum of
+ * all the others in at least 80% of the periods where every series is present,
+ * judged on at least 3 such periods and at least 2 siblings (with a single
+ * sibling "equal values" is a legitimate pair, not a total). Non-negative
+ * values only; zero-sum periods carry no evidence and are skipped. Two
+ * candidates passing is ambiguous: null. Only meaningful for ADDITIVE measures.
+ * Returns null whenever the evidence is thin, so the safe answer is "no total".
+ */
+export function findNumericTotalSeries(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  keys: readonly string[],
+  opts: {
+    /** Only these keys may be the total (the labels nominated them); default: any key. */
+    candidates?: readonly string[];
+    /** Minimum number of rows compared; default 3 (a bar chart has one row, so it passes 1 together with `candidates`). */
+    minCells?: number;
+  } = {},
+): string | null {
+  if (keys.length < 3) return null;
+  const minCells = Math.max(1, opts.minCells ?? TOTAL_MIN_CELLS);
+  const allowed = opts.candidates ? new Set(opts.candidates) : null;
+  // Per usable row: the value of every key, their sum, and whether all are integers.
+  const usable: Array<{ values: number[]; sum: number; integers: boolean }> = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const values: number[] = [];
+    let sum = 0;
+    let integers = true;
+    let ok = true;
+    for (const k of keys) {
+      const v = (row as Record<string, unknown>)[k];
+      if (!isFiniteNumber(v) || v < 0) {
+        ok = false;
+        break;
+      }
+      values.push(v);
+      sum += v;
+      if (!Number.isInteger(v)) integers = false;
+    }
+    if (ok) usable.push({ values, sum, integers });
+  }
+  if (usable.length < minCells) return null;
+
+  let found: string | null = null;
+  for (let i = 0; i < keys.length; i++) {
+    if (allowed && !allowed.has(keys[i])) continue;
+    let evaluated = 0;
+    let agree = 0;
+    for (const u of usable) {
+      const others = u.sum - u.values[i];
+      if (others <= 0) continue; // all siblings zero: no evidence either way
+      evaluated++;
+      if (Math.abs(u.values[i] - others) <= sumTolerance(u.values[i], keys.length - 1, u.integers)) agree++;
+    }
+    if (evaluated >= minCells && agree / evaluated >= TOTAL_QUORUM) {
+      if (found !== null) return null; // two candidates: ambiguous
+      found = keys[i];
+    }
+  }
+  return found;
+}
+
+/** One cell of the record-level check: a candidate total and the siblings it sits next to. */
+export interface TotalCell {
+  candidate: number;
+  siblings: number;
+  /** The largest single sibling. */
+  maxSibling: number;
+  siblingCount: number;
+  allIntegers: boolean;
+}
+
+/**
+ * True when a candidate value behaves like the total of its siblings across
+ * `cells` (same quorum / minimum evidence as `findNumericTotalSeries`): in
+ * each cell candidate ~= sum of siblings, and never below the largest sibling.
+ */
+export function totalCellsAgree(cells: Iterable<TotalCell>): boolean {
+  let evaluated = 0;
+  let agree = 0;
+  for (const c of cells) {
+    if (c.siblingCount < 2 || c.siblings <= 0) continue;
+    evaluated++;
+    const tol = sumTolerance(c.candidate, c.siblingCount, c.allIntegers);
+    if (Math.abs(c.candidate - c.siblings) <= tol && c.candidate >= c.maxSibling - tol) agree++;
+  }
+  return evaluated >= TOTAL_MIN_CELLS && agree / evaluated >= TOTAL_QUORUM;
+}
+
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
@@ -169,11 +302,37 @@ const LATIN_MEAN_TOKENS = new Set([
   "level", "levels",
   "price", "prices",
   "temperature", "temperatures", "humidity", "density",
+  // ratios, speeds, scores and growth figures: summing twelve monthly values of any of these is meaningless
+  "speed", "speeds", "expectancy", "utilization", "utilisation", "yield", "yields",
+  "growth", "inflation", "score", "scores", "rank", "ranks", "concentration", "concentrations",
 ]);
 const LATIN_PER_PHRASE_RE = /\bper\s*(?:capita|cent|hundred|thousand|million|\d[\d,]*)\b/;
+/**
+ * "per <word>" for any unit that is not a period of time: "students per
+ * teacher", "population per km2" are ratios, while "visits per year" or "cases
+ * per quarter" are counts within a period and stay additive.
+ */
+const LATIN_PER_UNIT_RE = /\bper\s+(?!(?:day|week|month|quarter|year|annum|hour|minute|second)s?\b)[a-z0-9]/;
+/** Two further whole phrases that always name a ratio. */
+const LATIN_RATIO_PHRASE_RE = /\bshare\s+of\b|\bload\s+factor\b/;
+/** Arabic "لكل" (per), again unless the unit is a period of time. */
+const ARABIC_PER_RE = /(?<![؀-ۿ])لكل\s+(?!(?:يوم|أسبوع|اسبوع|شهر|سنة|عام|ربع)(?![؀-ۿ]))\S/;
 /** Arabic has no usable `\b`: plain substring match, per the spec. */
 const ARABIC_MEAN_RE =
   /معدل|نسبة|متوسط|مؤشر|سعر|أسعار|اسعار|درجة الحرارة|مستوى|مستويات|الرقم القياسي|رقم قياسي|كثافة/;
+/** "عدد ..." = "number of ...": a count, even of schools called "متوسطة" or of "مستويات". */
+const ARABIC_COUNT_PREFIX_RE = /^(?:ال)?عدد(?![؀-ۿ])/;
+/** Under a count prefix only a STATED rate or ratio makes the measure non-additive. */
+const ARABIC_COUNT_MEAN_RE = /معدل|نسبة/;
+/** "متوسطة/المتوسطة/متوسطات" are the feminine/plural ADJECTIVE (intermediate schools), not "average". */
+const ARABIC_INTERMEDIATE_RE = /(?:ال)?متوسط(?:ة|ات)/g;
+/** "Number of Level 3 schools", "Number of price changes": what follows names WHAT is counted. */
+const LATIN_COUNT_PREFIX_RE = /^\s*(?:the\s+)?(?:total\s+)?(?:number|no\.?|count|quantity)\s+of\b/i;
+const COUNTED_QUALIFIER_TOKENS = new Set([
+  "level", "levels", "price", "prices", "index", "indices", "indexes", "temperature", "temperatures",
+  "humidity", "density", "score", "scores", "rank", "ranks", "speed", "speeds", "yield", "yields",
+  "growth", "concentration", "concentrations",
+]);
 /** A bare "Point"/"Points" label is how the CPI datasets name the index value. */
 const BARE_INDEX_POINT_RE = /^(?:points?|نقطة|نقاط)$/i;
 
@@ -189,11 +348,31 @@ function latinTokens(text: string): string[] {
 export function isMeanLikeText(text: string | null | undefined): boolean {
   if (!text) return false;
   if (/[%٪]/.test(text)) return true;
-  if (ARABIC_MEAN_RE.test(text)) return true;
-  if (BARE_INDEX_POINT_RE.test(text.trim())) return true;
+  const trimmed = text.trim();
+  if (ARABIC_PER_RE.test(trimmed)) return true;
+  if (ARABIC_COUNT_PREFIX_RE.test(trimmed)) {
+    if (ARABIC_COUNT_MEAN_RE.test(trimmed)) return true;
+  } else {
+    const arabic = /مدرس|مدارس/.test(trimmed) ? trimmed.replace(ARABIC_INTERMEDIATE_RE, " ") : trimmed;
+    if (ARABIC_MEAN_RE.test(arabic)) return true;
+  }
+  if (BARE_INDEX_POINT_RE.test(trimmed)) return true;
   const lower = text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-  if (LATIN_PER_PHRASE_RE.test(lower)) return true;
-  return latinTokens(text).some((t) => LATIN_MEAN_TOKENS.has(t));
+  if (LATIN_PER_PHRASE_RE.test(lower) || LATIN_PER_UNIT_RE.test(lower) || LATIN_RATIO_PHRASE_RE.test(lower)) return true;
+  const counted = LATIN_COUNT_PREFIX_RE.test(trimmed);
+  return latinTokens(text).some((t) => LATIN_MEAN_TOKENS.has(t) && !(counted && COUNTED_QUALIFIER_TOKENS.has(t)));
+}
+
+/** "km/h", "µg/m3", "BHD/kg": a slash inside a UNIT is a ratio of two quantities. */
+function hasSlashUnit(unit: string | null | undefined): boolean {
+  return !!unit && /\S\s*\/\s*\S/.test(unit);
+}
+
+/** The same for a label's trailing "(km/h)" / "[BHD/kg]"; a slash elsewhere ("Imports/Exports (BHD)") is just a list. */
+function hasTrailingParenSlash(label: string | null | undefined): boolean {
+  if (!label) return false;
+  const paren = label.trim().match(/[([]\s*([^()[\]]{1,24}?)\s*[)\]]\s*$/);
+  return !!paren && hasSlashUnit(paren[1]);
 }
 
 /**
@@ -205,7 +384,13 @@ export function inferAggregate(input: {
   label?: string | null;
   unit?: string | null;
 }): "sum" | "mean" {
-  return isMeanLikeText(input.name) || isMeanLikeText(input.label) || isMeanLikeText(input.unit) ? "mean" : "sum";
+  return isMeanLikeText(input.name) ||
+    isMeanLikeText(input.label) ||
+    isMeanLikeText(input.unit) ||
+    hasSlashUnit(input.unit) ||
+    hasTrailingParenSlash(input.label)
+    ? "mean"
+    : "sum";
 }
 
 /**
@@ -225,7 +410,8 @@ const UNIT_WORDS = new Set([
   "mw", "kw", "mwh", "kwh", "gwh", "mcm", "bbl", "barrel", "barrels", "teu",
   // counts and time
   "person", "persons", "people", "unit", "units", "household", "households", "case", "cases",
-  "day", "days", "hour", "hours", "minute", "minutes", "week", "weeks", "month", "months", "year", "years",
+  "day", "days", "hour", "hours", "h", "hr", "hrs", "minute", "minutes", "week", "weeks", "month", "months", "year", "years",
+  "ppm", "ppb", "mph",
   // ratios
   "percent", "percentage", "pct", "per", "capita", "cent", "of", "in", "points", "point",
   // Arabic
@@ -379,4 +565,146 @@ export function detectPartialLastPeriod(counts: readonly number[]): boolean {
   const prior = counts.slice(Math.max(0, counts.length - 1 - PARTIAL_LOOKBACK), counts.length - 1);
   const med = median(prior);
   return med > 0 && last < PARTIAL_RATIO * med;
+}
+
+/** What one period of a month-grain chart contains: row count and, when the rows carry dates, the latest day of the month seen. */
+export interface PeriodCoverage {
+  period: string;
+  count: number;
+  /** Greatest day-of-month among the period's rows; 0/undefined when the rows are day-less. */
+  maxDay?: number;
+}
+
+/** A period more than this many days short of its own historical trailing slack is judged by the calendar, not the count. */
+const CALENDAR_LOOKBACK = 6;
+/** Calendar judgement needs a regular cadence: complete months must end within a week of month end (daily / business-day / weekly). */
+const CALENDAR_MAX_LEARNED_SLACK = 6;
+/** ...and the last period must ALSO have fewer rows than this share of the prior median (one weak signal never hides a period). */
+const CALENDAR_COUNT_RATIO = 0.95;
+
+function daysInMonthOf(period: string): number | null {
+  const p = parsePeriod(period);
+  if (!p || p.month === null) return null;
+  return new Date(Date.UTC(p.year, p.month, 0)).getUTCDate();
+}
+
+/**
+ * Calendar-based completeness for daily / weekly / business-day data, which
+ * the row-count rule above misses when the last month is cut at day 24-29
+ * (a 24-day month still has 77% of the rows of a 31-day one).
+ *
+ * "Slack" = days between a month's latest row and the month's end. The
+ * dataset's own complete months show how large it normally is (0 for daily
+ * data, up to 2-3 for business days, up to 6 for weekly data). The last period
+ * is partial when its slack exceeds the largest prior slack AND it also has
+ * visibly fewer rows. Judged only with >= 2 dated prior periods and a regular
+ * cadence (largest prior slack <= 6): monthly-dated or event-log data fall
+ * through to the count rule. Day-less periods are never judged here.
+ */
+export function detectPartialLastPeriodByCalendar(coverage: readonly PeriodCoverage[]): boolean {
+  if (coverage.length < 3) return false;
+  const last = coverage[coverage.length - 1];
+  const lastDays = daysInMonthOf(last.period);
+  if (!last.maxDay || last.maxDay < 1 || lastDays === null || last.maxDay > lastDays) return false;
+
+  const prior = coverage.slice(Math.max(0, coverage.length - 1 - CALENDAR_LOOKBACK), coverage.length - 1);
+  const slacks: number[] = [];
+  for (const p of prior) {
+    const days = daysInMonthOf(p.period);
+    if (days === null || !p.maxDay || p.maxDay < 1 || p.maxDay > days) continue;
+    slacks.push(days - p.maxDay);
+  }
+  if (slacks.length < 2) return false;
+  const learned = Math.max(...slacks);
+  if (learned > CALENDAR_MAX_LEARNED_SLACK) return false;
+  if (lastDays - last.maxDay <= learned) return false;
+
+  const med = median(prior.map((p) => p.count));
+  return med > 0 && last.count < CALENDAR_COUNT_RATIO * med;
+}
+
+/** The count rule OR the calendar rule. `coverage` is ascending, one entry per period that has data. */
+export function isLastPeriodPartial(coverage: readonly PeriodCoverage[]): boolean {
+  return detectPartialLastPeriod(coverage.map((c) => c.count)) || detectPartialLastPeriodByCalendar(coverage);
+}
+
+// ---------------------------------------------------------------------------
+// 5. Name predicates
+// ---------------------------------------------------------------------------
+
+function normalizeNameWords(text: string): string {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06FF]+/g, " ")
+    .trim();
+}
+
+/**
+ * Whole-label identifier names: a numeric column that is an address part, a
+ * phone/CPR or a register number, never a quantity. The WHOLE normalized name
+ * must be one of these (optionally followed by no/number/num/nr/id/code), so
+ * "Road Accidents", "Building Permits", "Road Length", "Zone Population" and
+ * "Passengers Number" stay measures. Words that are also plausible counts when
+ * bare ("Case", "Permit", "Order") only count WITH the number suffix.
+ */
+const BARE_IDENTIFIER_NOUNS =
+  "phone|mobile|tel|telephone|fax|cpr|building|bldg|road|block|flat|apartment|house|plot|parcel|shop|unit|po box|pobox|p o box|zip|postal code|plate|chassis";
+const SUFFIXED_IDENTIFIER_NOUNS =
+  "licen[cs]e|registration|reg|permit|case|file|account|reference|ref|serial|passport|civil|cr|tax|invoice|receipt|ticket|tender|contract|order|policy|claim|booking|id card|national";
+const ID_SUFFIX = "(?: (?:no|num|number|nr|id|code))";
+const LATIN_IDENTIFIER_NAME_RE = new RegExp(
+  `^(?:(?:${BARE_IDENTIFIER_NOUNS})${ID_SUFFIX}?|(?:${SUFFIXED_IDENTIFIER_NOUNS})${ID_SUFFIX})$`,
+);
+const ARABIC_IDENTIFIER_NAME_RE =
+  /^(?:(?:ال)?(?:هاتف|جوال|مبنى|عمارة|بناية|طريق|شارع|مجمع|شقة|قطعة|منزل)|رقم\s+(?!قياسي)[؀-ۿ]+(?:\s+[؀-ۿ]+)?)$/;
+
+/** True when a field name or label is, as a whole, an identifier/address-part name ("Phone", "Building", "Road No", "License Number", "رقم الهاتف"). */
+export function isIdentifierLikeName(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const norm = normalizeNameWords(text);
+  if (norm === "" || norm.length > 40) return false;
+  return LATIN_IDENTIFIER_NAME_RE.test(norm) || ARABIC_IDENTIFIER_NAME_RE.test(norm);
+}
+
+/**
+ * A series NAME that says its values do not add up with its siblings: an
+ * explicit "%" or per-N, or a rate/ratio/average/index/price word. Narrower than
+ * `isMeanLikeText` on purpose: "Primary Level", "Low Density Housing" and
+ * "Price Category" are real partitions and must keep their summed headline.
+ */
+const NON_ADDITIVE_NAME_TOKENS = new Set([
+  "rate", "rates", "ratio", "ratios", "percent", "percents", "percentage", "percentages", "pct",
+  "proportion", "proportions", "average", "averages", "avg", "mean", "median",
+  "index", "indices", "indexes", "price", "prices",
+]);
+const ARABIC_NON_ADDITIVE_NAME_RE = /(?<![؀-ۿ])(?:ال)?(?:معدل(?:ات)?|نسبة|نسب|متوسط|مؤشر(?:ات)?|سعر|أسعار|اسعار)(?![؀-ۿ])/;
+
+export function isNonAdditiveSeriesName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  if (/[%٪]/.test(name)) return true;
+  if (LATIN_PER_PHRASE_RE.test(name.toLowerCase())) return true;
+  if (ARABIC_NON_ADDITIVE_NAME_RE.test(name)) return true;
+  return latinTokens(name).some((t) => NON_ADDITIVE_NAME_TOKENS.has(t));
+}
+
+/**
+ * A series DIMENSION whose values are different quantities rather than parts of
+ * one ("Indicator", "Measure", "Metric", "Variable", "Parameter", "Pollutant",
+ * "المؤشر", "البند"): summing its values mixes units. Matched as whole words on
+ * the field name and label (machine names like indicator_name / dataType too).
+ * Never bare "type" or "category": "Type of School" and "Nationality" are
+ * partitions.
+ */
+const INDICATOR_DIMENSION_RE =
+  /(?:^| )(?:indicators?|measures?|metrics?|variables?|parameters?|pollutants?|data types?|datatypes?)(?: |$)/;
+const ARABIC_INDICATOR_DIMENSION_RE =
+  /(?<![؀-ۿ])(?:ال)?(?:مؤشر(?:ات)?|قياس|مقياس|بند|متغير(?:ات)?|ملوث(?:ات)?)(?![؀-ۿ])|نوع البيانات/;
+
+export function isIndicatorDimensionName(...names: Array<string | null | undefined>): boolean {
+  return names.some((n) => {
+    if (!n) return false;
+    const norm = normalizeNameWords(n);
+    return INDICATOR_DIMENSION_RE.test(norm) || ARABIC_INDICATOR_DIMENSION_RE.test(norm);
+  });
 }
