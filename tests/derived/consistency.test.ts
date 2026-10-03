@@ -6,7 +6,9 @@ import type { VizConfig } from "@/lib/sync/derived";
 
 /**
  * Property-style consistency check over 120 seeded random datasets: the chart
- * cells equal an independent oracle computed straight from the generator, and
+ * cells equal an independent oracle computed straight from the generator (for a
+ * mean with a hidden "Total" row the oracle is the PUBLISHED Total, not the
+ * unweighted mean of the parts it used to pin), and
  * the three places a headline number appears (persisted vizConfig.headline,
  * the card/home metric from extractFeaturedMetric, the summary sentence) are
  * ONE number. This is the regression net for "card says 1.5M, page says 4.7M".
@@ -65,11 +67,13 @@ function generate(seed: number): { spec: Spec; records: Rec[]; fields: ReturnTyp
       }
       let sum = 0;
       let count = 0;
+      // The published overall figure of this cell: distinct per cell, and never the sum of the parts.
+      const totalValue = 5000 + pi * 10 + si;
       for (const region of regions) {
         const isTotalRegion = region === "Total";
         const perRegionRows = pi === periods.length - 1 && partialLast ? 1 : rowsPerCell;
         for (let k = 0; k < perRegionRows; k++) {
-          const v = isTotalRegion ? 7777 : 1 + Math.floor(r() * 999);
+          const v = isTotalRegion ? totalValue : 1 + Math.floor(r() * 999);
           const rec: Rec = grain === "year" ? { year: p } : { date: `${p}-01` };
           if (!areaMode) rec.series = s;
           rec.region = region;
@@ -81,7 +85,9 @@ function generate(seed: number): { spec: Spec; records: Rec[]; fields: ReturnTyp
           }
         }
       }
-      cells.set(`${p}|${s}`, mean ? sum / count : sum);
+      // Sums: the hidden Total row is dropped, so parts only. Means: the published Total IS the overall
+      // rate (the table has it for every cell), not an unweighted mean of the parts.
+      cells.set(`${p}|${s}`, mean && hiddenTotal ? totalValue : mean ? sum / count : sum);
     });
   });
 
@@ -126,7 +132,9 @@ describe("derived fields are consistent with an independent oracle (120 seeded d
         expect(viz.totalKey ?? null).toBe(spec.hasTotal ? "Total" : null);
         if (spec.hasTotal) expect(viz.seriesValues[0]).toBe("Total");
       }
-      expect(viz.excludedTotals ?? []).toEqual(spec.hiddenTotal ? ["Total"] : []);
+      // sums drop the hidden Total; means USE it (and say so) instead of averaging the parts
+      expect(viz.excludedTotals ?? []).toEqual(spec.hiddenTotal && !spec.mean ? ["Total"] : []);
+      expect(viz.usedTotals ?? []).toEqual(spec.hiddenTotal && spec.mean ? ["Total"] : []);
 
       // 2. independent headline oracle
       const flaggedPartial = viz.lastPeriodPartial === true;
@@ -168,7 +176,7 @@ describe("derived fields are consistent with an independent oracle (120 seeded d
       const metric = extractFeaturedMetric(viz, out.chartData);
       if (viz.headline === null) {
         expect(metric).toBeNull();
-        expect(out.summaryAr).toMatch(/^تحتوي قاعدة البيانات/);
+        expect(out.summaryAr).toMatch(/^تحتوي مجموعة البيانات/);
       } else {
         expect(metric?.value).toBe(viz.headline!.value);
         expect(metric?.period).toBe(viz.headline!.period);

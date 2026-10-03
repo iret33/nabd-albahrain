@@ -231,8 +231,9 @@ describe("formatSummaryNumber: grouped en-US, magnitude-based digits", () => {
     [2233000, "2,233,000"],
     [18620, "18,620"],
     [525, "525"],
-    [99.94, "99.9"],
-    [12.345, "12.3"],
+    [99.94, "99.94"],
+    [12.345, "12.35"],
+    [112.37, "112.4"], // an index level keeps its decimal (was "112")
     [3.6, "3.6"],
     [3.456, "3.46"],
     [9.999, "10"],
@@ -242,7 +243,7 @@ describe("formatSummaryNumber: grouped en-US, magnitude-based digits", () => {
     [0, "0"],
     [-0, "0"],
     [-1234.567, "-1,235"], // Math.abs decides the digits: a negative must not get extra decimals
-    [-12.345, "-12.3"],
+    [-12.345, "-12.35"],
     [-3.456, "-3.46"],
     [-0.0001, "-0.0001"],
     [Number.NaN, "0"],
@@ -294,7 +295,9 @@ describe("buildHeadlineSentence", () => {
     const down = { ...base, period: "2025", prevPeriod: "2024", changePct: -7.69, value: 3.6 };
     expect(buildHeadlineSentence({ headline: down, grain: "year", unit: "%" })).toBe("آخر قيمة مسجلة: 3.6% في 2025، بتغير -7.7% عن الفترة السابقة.");
     const flat = { ...base, period: "2025", prevPeriod: "2024", changePct: -0.04 };
-    expect(buildHeadlineSentence({ headline: flat, grain: "year" })).toContain("بتغير +0.0%");
+    // a change that rounds to 0.0 carries no sign at all (neither "+0.0%" nor "-0.0%")
+    expect(buildHeadlineSentence({ headline: flat, grain: "year" })).toContain("بتغير 0.0% عن");
+    expect(buildHeadlineSentence({ headline: { ...flat, changePct: 0.04 }, grain: "year" })).toContain("بتغير 0.0% عن");
   });
 
   it("no % clause without a change", () => {

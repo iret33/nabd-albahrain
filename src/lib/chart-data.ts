@@ -21,6 +21,7 @@ import {
   type HeadlineSource,
   type TrendPoint,
 } from "@/lib/headline";
+import { formatPeriodAr } from "@/lib/headline";
 import { parsePeriod, type Grain } from "@/lib/series";
 
 export type { TrendPoint } from "@/lib/headline";
@@ -37,6 +38,8 @@ export interface FeaturedMetric {
   basis?: HeadlineBasis;
   /** True when a partial trailing period was left out of `value` and `points`. */
   partial?: boolean;
+  /** True when the headline period's rows carried a provisional marker ("2024*"): UI may label the figure "أولية". */
+  provisional?: boolean;
 }
 
 function isTemporalConfig(vizConfig: VizConfig | null): vizConfig is Extract<VizConfig, { type: "area" | "multi-line" }> {
@@ -95,6 +98,7 @@ export function extractFeaturedMetric(vizConfig: VizConfig | null, chartData: un
     prevPeriod: headline.prevPeriod,
     basis: headline.basis,
     partial: trend.partialPeriod !== null,
+    ...(headline.provisional ? { provisional: true } : {}),
   };
 }
 
@@ -125,6 +129,12 @@ export interface SeriesSummary {
   partial: boolean;
 }
 
+/**
+ * Raw % change. The persisted `vizConfig.headline.changePct` is rounded to 2
+ * decimals at sync time, this is not: the two can only disagree in the rounding
+ * of the second decimal, which `formatChangePercent` (one decimal) hides except
+ * at an exact x.x5 boundary.
+ */
 function pctChange(from: number, to: number): number | null {
   return from !== 0 && Number.isFinite(from) && Number.isFinite(to) ? ((to - from) / Math.abs(from)) * 100 : null;
 }
@@ -239,6 +249,8 @@ export function sparklinePath(
 // ---------------------------------------------------------------------------
 
 const GRAIN_AR: Record<Grain, string> = { year: "سنة", month: "شهر" };
+/** The default label of the synthetic "rest" bucket (see OTHER_LABEL in src/lib/chart-model.ts). */
+const OTHER_BUCKET_LABEL = "أخرى";
 
 function aggregateWordAr(aggregate: string | undefined): string {
   if (aggregate === "mean") return "متوسط";
@@ -259,17 +271,46 @@ export interface ChartCaptionParts {
   notes: string[];
 }
 
+const countFormatter = new Intl.NumberFormat("en-US");
+
+/** The label of a chart's synthetic "rest" bucket: a persisted override, else the default. */
+function otherLabelOf(vizConfig: VizConfig): string {
+  const label = "otherLabel" in vizConfig ? vizConfig.otherLabel : undefined;
+  return typeof label === "string" && label !== "" ? label : OTHER_BUCKET_LABEL;
+}
+
+/** Why a multi-series temporal chart states no single number (the reason is persisted next to `headline: null`). */
+const WITHHELD_NOTE_AR: Partial<Record<string, string>> = {
+  "mixed-series": "السلاسل المعروضة مؤشرات مختلفة لا يصح جمعها، لذا لا يُعرض رقم واحد",
+  "ambiguous-total": "أكثر من سلسلة إجمالية، لذا لا يُعرض رقم واحد",
+  overflow: "السلاسل المعروضة جزء من مجموعها، لذا لا يُعرض رقم إجمالي واحد",
+};
+
 /** The pieces of `chartCaption`, for UIs that style the title and the notes separately. */
 export function chartCaptionParts(vizConfig: VizConfig | null): ChartCaptionParts {
   if (!vizConfig || vizConfig.type === "table") return { title: "", notes: [] };
   const notes: string[] = [];
+  const other = otherLabelOf(vizConfig);
+  const isMean = "aggregate" in vizConfig && vizConfig.aggregate === "mean";
 
   const hidden = "hiddenDimensions" in vizConfig ? vizConfig.hiddenDimensions : undefined;
   if (hidden && hidden.length > 0) notes.push(`مجمّع عبر: ${hidden.join("، ")}`);
 
+  const used = "usedTotals" in vizConfig ? vizConfig.usedTotals : undefined;
+  if (used && used.length > 0) notes.push(`القيم هي الإجمالي المنشور («${used.join("»، «")}») لا متوسط الأجزاء`);
+
   const excluded = "excludedTotals" in vizConfig ? vizConfig.excludedTotals : undefined;
   if (excluded && excluded.length > 0) {
-    notes.push(`استُبعدت صفوف «${excluded.join("»، «")}» لتفادي العدّ المزدوج`);
+    const rows = `استُبعدت صفوف «${excluded.join("»، «")}»`;
+    const unweighted = "unweightedMean" in vizConfig && vizConfig.unweightedMean === true;
+    // Nothing is double counted in a mean: the honest reason is that the parts were averaged without weights.
+    notes.push(
+      !isMean
+        ? `${rows} لتفادي العدّ المزدوج`
+        : unweighted
+          ? `${rows}؛ المتوسط غير مرجّح لأن الإجمالي المنشور غير متوفر لكل الفترات`
+          : rows,
+    );
   }
 
   if (vizConfig.type === "histogram") {
@@ -278,26 +319,45 @@ export function chartCaptionParts(vizConfig: VizConfig | null): ChartCaptionPart
 
   const agg = aggregateWordAr(vizConfig.aggregate);
   const measure = measureWithUnit(vizConfig.measureLabel, vizConfig.unit);
-  if (vizConfig.aggregate === "mean") notes.push("القيم متوسطات وليست مجاميع قابلة للجمع");
+  if (isMean) notes.push("القيم متوسطات وليست مجاميع قابلة للجمع");
+
+  const escapes = "seriesKeyEscapes" in vizConfig ? vizConfig.seriesKeyEscapes : undefined;
+  if (escapes && escapes.length > 0) notes.push("أُعيدت تسمية بعض السلاسل لأن أسماءها محجوزة للرسم");
 
   let title: string;
-  if (vizConfig.type === "area") {
-    title = `${agg} ${measure} حسب ${GRAIN_AR[vizConfig.grain]}`;
+  if (vizConfig.type === "area" || vizConfig.type === "multi-line") {
+    if (vizConfig.type === "area") {
+      title = `${agg} ${measure} حسب ${GRAIN_AR[vizConfig.grain]}`;
+    } else {
+      title = `${agg} ${measure} حسب ${GRAIN_AR[vizConfig.grain]}، موزعاً حسب ${vizConfig.seriesLabel}`;
+      if (vizConfig.totalKey) notes.push(`«${vizConfig.totalKey}» خط مستقل ولا يُجمع مع أجزائه`);
+      if (vizConfig.seriesOverflow) notes.push(`يُعرض أعلى ${vizConfig.seriesValues.length} فئات فقط`);
+    }
     if (vizConfig.lastPeriodPartial) notes.push("الفترة الأخيرة غير مكتملة");
-  } else if (vizConfig.type === "multi-line") {
-    title = `${agg} ${measure} حسب ${GRAIN_AR[vizConfig.grain]}، موزعاً حسب ${vizConfig.seriesLabel}`;
-    if (vizConfig.totalKey) notes.push(`«${vizConfig.totalKey}» خط مستقل ولا يُجمع مع أجزائه`);
-    if (vizConfig.seriesOverflow) notes.push(`يُعرض أعلى ${vizConfig.seriesValues.length} فئات فقط`);
-    if (vizConfig.lastPeriodPartial) notes.push("الفترة الأخيرة غير مكتملة");
+    const withheld =
+      vizConfig.headline === null && vizConfig.headlineWithheld ? WITHHELD_NOTE_AR[vizConfig.headlineWithheld] : undefined;
+    if (withheld) notes.push(withheld);
+    const provisional = vizConfig.provisionalPeriods;
+    if (provisional && provisional.length > 0) {
+      notes.push(`بيانات ${provisional.slice(-3).map(formatPeriodAr).join("، ")} أولية`);
+    }
+    if (vizConfig.droppedPeriodRows) {
+      notes.push(`صفوف استُبعدت لأن تاريخها مفقود أو غير مفهوم: ${countFormatter.format(vizConfig.droppedPeriodRows)}`);
+    }
+    if (vizConfig.supersededProvisionalRows) {
+      notes.push(
+        `صفوف أولية استُبعدت لأن للفترة نفسها صفوفاً نهائية: ${countFormatter.format(vizConfig.supersededProvisionalRows)}`,
+      );
+    }
   } else if (vizConfig.type === "bar-h") {
     title = `${agg} ${measure} حسب ${vizConfig.dimensionLabel}`;
-    if (vizConfig.otherBucketed) notes.push("تُعرض أعلى الفئات وتُجمع البقية ضمن «أخرى»");
+    if (vizConfig.otherBucketed) notes.push(`تُعرض أعلى الفئات وتُجمع البقية ضمن «${other}»`);
   } else {
     title = `${agg} ${measure} حسب ${vizConfig.xLabel} و ${vizConfig.seriesLabel}`;
     if (vizConfig.stacked === false) notes.push("أعمدة متجاورة وليست متراكمة");
-    if (vizConfig.otherSeriesBucketed) notes.push("بقية السلاسل مجمّعة ضمن «أخرى»");
+    if (vizConfig.otherSeriesBucketed) notes.push(`بقية السلاسل مجمّعة ضمن «${other}»`);
     else if (vizConfig.seriesOverflow) notes.push(`يُعرض أعلى ${vizConfig.seriesValues.length} فئات فقط`);
-    if (vizConfig.otherBucketed) notes.push("تُعرض أعلى الفئات وتُجمع البقية ضمن «أخرى»");
+    if (vizConfig.otherBucketed) notes.push(`تُعرض أعلى الفئات وتُجمع البقية ضمن «${other}»`);
   }
   return { title, notes };
 }

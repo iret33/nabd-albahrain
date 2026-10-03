@@ -16,6 +16,11 @@
  *                 get it.
  *   seriesField   the text dimension to split a temporal chart into lines
  *                 (a multi-line chart; at most 8 series are plotted).
+ *   lastPeriod    "complete" | "partial": pins whether the newest period of a
+ *                 temporal chart is complete. The engine judges this itself
+ *                 (row coverage, and for daily/weekly data the calendar), so
+ *                 this is only for a dataset it keeps getting wrong: "partial"
+ *                 headlines the previous period, "complete" never does.
  *
  * Changing an entry changes derived output for that dataset: it takes effect
  * on its next re-derivation (the sync engine re-derives rows whose
@@ -28,6 +33,7 @@ export interface VizOverride {
   measureField?: string;
   aggregate?: Aggregate;
   seriesField?: string;
+  lastPeriod?: "complete" | "partial";
 }
 
 export const vizOverrides: Record<string, VizOverride> = {

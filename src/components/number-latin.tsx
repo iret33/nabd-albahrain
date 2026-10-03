@@ -1,4 +1,5 @@
-import { formatNumber, formatCompact } from "@/lib/format";
+import { formatCompact } from "@/lib/format";
+import { formatDisplayNumber } from "@/lib/headline";
 
 /**
  * Wraps a numeric figure in Latin tabular digits, per the design spec —
@@ -10,10 +11,16 @@ import { formatNumber, formatCompact } from "@/lib/format";
  *  - `grouped={false}` prints the digits as-is. Use it for years and
  *    identifiers (a year must read "2020", never "2,020").
  *  - `signed` prefixes "+" on positive numbers (change badges).
- *  - `maximumFractionDigits` caps decimals (defaults to the shared en-US
- *    formatter's three).
+ *  - `maximumFractionDigits` caps decimals. Without it the number follows the
+ *    site's ONE display convention (`formatDisplayNumber`, the same digits as the
+ *    lead sentence: 2 decimals below 100, 1 below 1,000, none above, two
+ *    significant digits below 1), so a card, a stats tile and the sentence print
+ *    the same figure. The records table asks for more digits explicitly.
  *  - `compact` renders 1,512,345 as "1.5M" (axis labels, tight chips).
  * String values pass through untouched, as before.
+ *
+ * A value that rounds to zero never prints as "0" or "-0": 0.0042 under a cap of
+ * two decimals falls back to two significant digits ("0.0042").
  */
 export function NumberLatin({
   value,
@@ -43,9 +50,11 @@ export function NumberLatin({
         ? String(value)
         : String(Number(value.toFixed(Math.max(0, Math.min(20, maximumFractionDigits)))));
   } else if (maximumFractionDigits !== undefined) {
-    display = new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(value);
+    const capped = new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(value);
+    // Intl keeps a negative zero ("-0") and rounds 0.0042 to "0": both hide a real value.
+    display = value !== 0 && (capped === "0" || capped === "-0") ? formatDisplayNumber(value) : capped;
   } else {
-    display = formatNumber(value);
+    display = formatDisplayNumber(value);
   }
   if (signed && typeof value === "number" && Number.isFinite(value) && value > 0) display = `+${display}`;
 

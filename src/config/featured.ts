@@ -53,7 +53,8 @@
  * function for rows synced before it existed). It applies to every
  * `DatasetCard` sparkline site-wide, not just this featured band. When the
  * headline cannot be stated honestly (two "Total X" series, a rate that
- * cannot be summed) the headline is null and the entry below is skipped,
+ * cannot be summed, series that are different indicators such as a rate next
+ * to a head count) the headline is null and the entry below is skipped,
  * exactly like an id that has not been synced yet.
  *
  * Kept to 6 entries as before — each one costs a query + a chart on the
@@ -65,6 +66,19 @@
 export interface FeaturedEntry {
   datasetId: string;
   metricLabelAr: string;
+  /**
+   * Optional guard: the numeric field this band entry is ABOUT (e.g. the Total
+   * column of a wide table). When set, the home band should skip the entry if
+   * the dataset's derived `vizConfig.measureField` is a different column,
+   * because the hand-written `metricLabelAr` would then caption another number
+   * (non-Bahraini population under "عدد السكان"). Left unset for every entry
+   * below: the real portal schema is not available to confirm the field names,
+   * and a wrong name would hide a good card. Pin an id here, and in
+   * `src/config/viz-overrides.ts` (`measureField`), only after checking its
+   * actual columns. Entries whose chart has no `measureField` (tables, rows
+   * synced before the field existed) are never skipped by this guard.
+   */
+  measureField?: string;
 }
 
 export const featuredEntries: FeaturedEntry[] = [

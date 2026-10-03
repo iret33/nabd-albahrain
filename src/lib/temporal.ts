@@ -17,6 +17,12 @@ export interface TemporalParts {
   month: number | null;
   /** null unless the source value carried a day. */
   day: number | null;
+  /**
+   * Present (true) only when the source value carried a provisional/estimate
+   * marker ("2024*", "2024 (p)", "2024e", "2024 prov."). The marker is stripped
+   * from the period, never silently: callers decide how to flag the figure.
+   */
+  provisional?: true;
 }
 
 const MIN_YEAR = 1900;
@@ -112,6 +118,47 @@ const NAME_THEN_YEAR_RE = /^(.+?)[\s,/.-]+(\d{4})$/;
 const YEAR_THEN_NAME_RE = /^(\d{4})[\s,/.-]+(.+)$/;
 
 /**
+ * No legitimate temporal value is longer than an ISO datetime with an offset
+ * (~35 chars; Arabic month names ~16). The cap keeps the two backtracking
+ * patterns above linear: `NAME_THEN_YEAR_RE` is quadratic on a long run of
+ * separators (a 40,000-dot cell took 1.6 s, 100,000 took 10 s), and it runs on
+ * every cell of a date-like column. Measured on the TRIMMED value, so padded
+ * real dates still parse.
+ */
+export const MAX_TEMPORAL_LENGTH = 64;
+
+/** "2024.0": how a spreadsheet export prints an integer year. */
+const FLOAT_YEAR_RE = /^(\d{4})\.0+$/;
+/** "FY2024" / "FY 2024": a fiscal year, named by the year it is booked under. */
+const FISCAL_YEAR_RE = /^fy\s?(\d{4})$/i;
+/** "2023/24", "2023/2024", "2023-2024": a fiscal/academic year, accepted ONLY when the second year is exactly the next one. */
+const SPAN_YEAR_RE = /^(\d{4})\s?[/-]\s?(\d{2}|\d{4})$/;
+
+/**
+ * Provisional / estimate markers a statistical table appends to the newest
+ * period. A whitelist on purpose: a generic "any 3 letters" rule would turn
+ * "2024 Mar" or "2024 BHD" into a year. Each alternative strips one marker:
+ *   "2024*", "2024 †"          symbols
+ *   "2024 (p)", "2024(prov.)"   parenthesised word
+ *   "2024p", "2024e"            a single letter glued to a digit
+ *   "2024 est.", "2024 مؤقت"    a separate word
+ */
+const PROVISIONAL_WORDS = "p|r|e|f|est|prov|prelim|preliminary|provisional|estimate|estimated|revised|مؤقت|مؤقتة|تقديري|تقديرية|أولي|أولية";
+const MARKER_SYMBOL_RE = /\s*[*†‡]+$/;
+const MARKER_PAREN_RE = new RegExp(`\\s*[(\\[]\\s*(?:${PROVISIONAL_WORDS})\\s*\\.?\\s*[)\\]]$`, "i");
+const MARKER_GLUED_RE = /(?<=\d)[prefPREF]$/;
+const MARKER_WORD_RE = new RegExp(`\\s+(?:est|prov|prelim|preliminary|provisional|estimate|estimated|revised|مؤقت|مؤقتة|تقديري|تقديرية|أولي|أولية)\\.?$`, "i");
+
+/** Strips ONE trailing provisional marker; null when the value carries none. */
+function stripProvisionalMarker(s: string): string | null {
+  for (const re of [MARKER_SYMBOL_RE, MARKER_PAREN_RE, MARKER_WORD_RE, MARKER_GLUED_RE]) {
+    const m = re.exec(s);
+    if (m && m.index > 0) return s.slice(0, m.index).trimEnd();
+  }
+  return null;
+}
+
+/**
  * Parse a raw export value as a temporal point. Accepted shapes only:
  *   - a bare 4-digit year (string, or an integer number) in 1900..2100;
  *   - ISO `YYYY-MM`, `YYYY-MM-DD`, optionally followed by `T`/space + time.
@@ -129,11 +176,44 @@ export function parseTemporalValue(raw: unknown): TemporalParts | null {
   }
   if (typeof raw !== "string") return null;
   const s = toLatinDigits(raw.trim());
-  if (s === "") return null;
+  if (s === "" || s.length > MAX_TEMPORAL_LENGTH) return null;
 
+  // The overwhelmingly common shape first: no marker can follow a bare year.
+  if (/^\d{4}$/.test(s)) return parseCore(s);
+
+  // A trailing provisional marker is stripped BEFORE parsing so it can never be
+  // swallowed as a "time" ("2024-03-15 (p)") and is always reported, never silently.
+  const stripped = stripProvisionalMarker(s);
+  if (stripped !== null && stripped !== "") {
+    const inner = parseCore(stripped);
+    if (inner) return { ...inner, provisional: true };
+  }
+  return parseCore(s);
+}
+
+/** The whitelist proper, on a trimmed, Latin-digit, length-capped string. */
+function parseCore(s: string): TemporalParts | null {
   if (/^\d{4}$/.test(s)) {
     const year = Number(s);
     return validYear(year) ? { year, month: null, day: null } : null;
+  }
+
+  // Year-grain shapes that the month patterns below would otherwise reject
+  // ("2024.00" and "2023/24" both look like an invalid month to them).
+  const yearish = FLOAT_YEAR_RE.exec(s) ?? FISCAL_YEAR_RE.exec(s);
+  if (yearish) {
+    const year = Number(yearish[1]);
+    return validYear(year) ? { year, month: null, day: null } : null;
+  }
+  const span = SPAN_YEAR_RE.exec(s);
+  if (span) {
+    const first = Number(span[1]);
+    const second = Number(span[2]);
+    // Only a span whose second year is exactly the next one is a fiscal/academic year ("2023/24" -> 2023).
+    // A two-digit second part that is a valid month ("2023/12", "2011-12") keeps its month meaning.
+    const adjacent =
+      span[2].length === 4 ? second === first + 1 : second === (first + 1) % 100 && !(second >= 1 && second <= 12);
+    if (adjacent && validYear(first)) return { year: first, month: null, day: null };
   }
 
   const iso = ISO_RE.exec(s);
@@ -207,6 +287,8 @@ export function createTemporalParser(maxEntries = 20_000): (raw: unknown) => Tem
   const cache = new Map<string | number, TemporalParts | null>();
   return (raw) => {
     if (typeof raw !== "string" && typeof raw !== "number") return null;
+    // Oversized junk is never a date and must not be kept alive as a cache key.
+    if (typeof raw === "string" && raw.length > 4 * MAX_TEMPORAL_LENGTH) return null;
     const hit = cache.get(raw); // a cached "unparseable" is null, a miss is undefined
     if (hit !== undefined) return hit;
     const parsed = parseTemporalValue(raw);

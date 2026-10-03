@@ -33,6 +33,16 @@ describe("countPhrase", () => {
   });
 });
 
+describe("row noun (rows left out of a chart)", () => {
+  it("agrees at every boundary", () => {
+    expect(countPhrase(1, NOUNS.row)).toBe("صف واحد");
+    expect(countPhrase(2, NOUNS.row, { oblique: true })).toBe("صفين");
+    expect(countPhrase(2, NOUNS.row)).toBe("صفان");
+    expect(countPhrase(5, NOUNS.row)).toBe("5 صفوف");
+    expect(countPhrase(11, NOUNS.row)).toBe("11 صفًا");
+  });
+});
+
 describe("countParts", () => {
   it("returns no digit string when the noun carries the count", () => {
     expect(countParts(1, NOUNS.record).number).toBeNull();
