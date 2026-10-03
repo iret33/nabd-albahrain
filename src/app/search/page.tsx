@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { listDatasets } from "@/lib/queries";
-import { activeFilters, listSearchParams, parseListParams, type ListParams, type RawSearchParams } from "@/lib/list-query";
+import { listSearchParams, parseListParams, type ListParams, type RawSearchParams } from "@/lib/list-query";
 import { listingMetadata } from "@/lib/seo";
 import { ListingResults, QueryText } from "@/components/listing-results";
 import { SearchForm } from "@/components/search-form";
@@ -10,14 +10,16 @@ interface Props {
 }
 
 /**
- * Result pages are never indexed (`noindex, follow`): they are an unbounded URL
- * space of ad-hoc queries with no canonical form (robots.txt also disallows
- * /search). The bare /search page, with nothing in the URL, is the only one
- * that is not marked.
+ * /search is never indexed (`noindex, follow`): it is an unbounded URL space of ad-hoc
+ * queries with no canonical form, and the bare page (a prompt to type something) has
+ * nothing worth a result slot either. It is NOT blocked in robots.txt on purpose: a
+ * Disallow would keep crawlers from ever fetching the page, so they would never see this
+ * noindex, and a linked bare URL could stay in the index "though blocked by robots.txt".
+ * The title echoes the query, so the noindex also keeps search-spam text injected through
+ * a crafted link out of result pages.
  */
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const params = parseListParams(await searchParams);
-  const searched = params.q !== "" || activeFilters(params).length > 0;
   return params.q
     ? listingMetadata({
         title: `نتائج البحث عن «${params.q}»`,
@@ -29,7 +31,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
         title: "البحث",
         description: "ابحث في كل مجموعات البيانات المفتوحة لمملكة البحرين.",
         path: "/search",
-        noindex: searched,
+        noindex: true,
       });
 }
 
@@ -58,7 +60,9 @@ export default async function SearchPage({ searchParams }: Props) {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
-      <h1 className="font-display text-3xl font-black text-sea-900">
+      {/* [overflow-wrap:anywhere], not just break-words: it also lowers the min-content width, so a pasted
+          100-character URL wraps instead of widening the whole page (WCAG 1.4.10 reflow). */}
+      <h1 className="font-display text-3xl font-black text-sea-900 [overflow-wrap:anywhere]">
         {result.query ? (
           <>
             نتائج البحث عن <QueryText q={result.query} />

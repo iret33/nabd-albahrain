@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { getThemeCounts, getPublisherCounts, getPortalStats, getSitemapDatasets } from "@/lib/queries";
+import { isValidPublisherSlug } from "@/lib/cache-config";
 import { SITE_URL } from "@/lib/site";
 
 /**
@@ -63,9 +64,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     withDate(`${SITE_URL}/categories/${encodeURIComponent(t.theme)}`, aggregateModified),
   );
 
-  const publisherEntries: MetadataRoute.Sitemap = publishers.map((p) =>
-    withDate(`${SITE_URL}/publishers/${p.slug}`, aggregateModified),
-  );
+  // `slugify` never yields an empty or over-long slug any more (Arabic names get a hashed one), so this
+  // filter is defence in depth: an invalid slug would be a `<loc>` that is the /publishers index
+  // itself (empty) or a page that 404s.
+  const publisherEntries: MetadataRoute.Sitemap = publishers
+    .filter((p) => isValidPublisherSlug(p.slug))
+    .map((p) => withDate(`${SITE_URL}/publishers/${p.slug}`, aggregateModified));
 
   const datasetEntries: MetadataRoute.Sitemap = datasets.map((d) =>
     withDate(`${SITE_URL}/dataset/${encodeURIComponent(d.id)}`, d.sourceModified ?? d.lastSyncedAt ?? undefined),
