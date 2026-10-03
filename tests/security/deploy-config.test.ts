@@ -95,7 +95,7 @@ describe("docker-compose.yml", () => {
 
   // r1-09 (compose side): Prisma's default pool is 2*vCPU+1 = 3 on a 1-vCPU VPS; a heavy sync pins one
   // connection per dataset being written, so /api/freshness and the pages starve (P2024 -> HTTP 500).
-  it("sets an explicit Prisma pool size above SYNC_CONCURRENCY + 6, from one overridable knob", () => {
+  it("sets an explicit Prisma pool size of at least SYNC_CONCURRENCY + 6, from one overridable knob", () => {
     const url = compose.match(/- DATABASE_URL=(\S+)/)?.[1] ?? "";
     expect(url).toMatch(
       /^postgresql:\/\/nabd:\$\{POSTGRES_PASSWORD:-nabd\}@db:5432\/nabd\?connection_limit=\$\{DB_POOL_SIZE:-(\d+)\}$/,

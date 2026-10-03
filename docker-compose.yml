@@ -28,9 +28,10 @@
 #   NEXT_PUBLIC_SITE_URL     public origin; baked into the build (canonical
 #                            links, sitemap) AND passed at runtime.
 #   DB_POOL_SIZE             Prisma connection-pool size for the app (default 12).
-#                            Must stay above SYNC_CONCURRENCY + 6: every dataset
-#                            being synced holds one connection for its whole
-#                            write transaction, and the lock heartbeat, progress
+#                            At least SYNC_CONCURRENCY + 6 (the app warns at
+#                            start when it is smaller): every dataset being
+#                            synced holds one connection for its whole write
+#                            transaction, and the lock heartbeat, progress
 #                            writer, /api/freshness (3 parallel queries) and
 #                            page queries need the rest. Prisma's own default is
 #                            2*vCPUs+1, i.e. 3 on a 1-vCPU VPS, which a heavy
@@ -48,12 +49,12 @@
 #                            while SYNC_CONCURRENCY >= 3.
 #   APP_NODE_OPTIONS         optional Node flags for the app container, e.g.
 #                            `--max-old-space-size=1024` (V8 old-space cap in MB;
-#                            measured peak with three 300k-row datasets in
-#                            flight is ~0.6-0.8 GB of heap on top of the Next
-#                            baseline, so ~1024 leaves headroom). Set it together
-#                            with APP_MEM_LIMIT: a heap cap alone turns memory
-#                            pressure into an abrupt "heap out of memory" crash
-#                            instead of slower GC.
+#                            three 300k-row datasets in flight were measured at
+#                            a ~0.6-0.8 GB process peak (RSS, Next baseline
+#                            included), so ~1024 leaves headroom). Set it
+#                            together with APP_MEM_LIMIT: a heap cap alone turns
+#                            memory pressure into an abrupt "heap out of memory"
+#                            crash instead of slower GC.
 #   GIT_SHA                  build arg, NOT a runtime variable: the revision the
 #                            image was built from, reported as `version` by
 #                            /api/health/ready. `.git` is not in the build

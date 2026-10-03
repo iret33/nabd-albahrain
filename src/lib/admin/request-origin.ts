@@ -3,22 +3,26 @@
  * runtime) and the login Server Action. Pure and runtime-neutral (no `next/*`,
  * no `node:*`) so it can be unit-tested and imported from the Edge bundle.
  *
- * Why the middleware cannot just use `req.url`: Next builds it from the
+ * Why the middleware cannot always trust `req.url`: Next builds it from the
  * server's BIND address, not from what the client asked for. A standalone
  * server started with `HOSTNAME=127.0.0.1` reports every request as
  * `http://localhost:<port>/...` (NextURL rewrites any 127.x.x.x host to
  * `localhost`), so `new URL("/admin/login", req.url)` sent visitors of
  * https://data.hekkapp.com/admin to https://localhost:3000/admin/login. A
- * relative `Location` is not an option either: the Edge adapter turns it into
- * `new NextURL(location)` and throws "Invalid URL" (a 500 on every logged-out
- * /admin hit), so the redirect must be absolute and built from the request's
- * own `Host`.
+ * relative `Location` cannot be written by hand either: the Edge adapter turns
+ * it into `new NextURL(location)` and throws "Invalid URL" (a 500 on every
+ * logged-out /admin hit). `requestOrigin()` therefore rebuilds the absolute
+ * origin from the request's own `Host` (see `loginUrl()` in middleware.ts for
+ * when that is needed).
  *
  * Trust model: `Host` is what the browser typed, so it is always honoured (a
  * forged one only redirects the forger's own request, and the response is
  * `no-store`). `X-Forwarded-Host` / `X-Forwarded-Proto` are honoured only when
  * TRUST_PROXY=1, exactly like `clientKey()` and the sync auth's origin check.
  * Every candidate is validated strictly; anything odd falls back to `req.url`.
+ *
+ * `isInsecureLoginRequest()` is the odd one out: it reads the browser's
+ * `Origin` header instead, for the reason given on that function.
  */
 
 type Env = Record<string, string | undefined>;

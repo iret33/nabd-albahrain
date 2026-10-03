@@ -1,5 +1,5 @@
-# Dependabot version updates. Security updates are separate (a repository
-# setting) and are not limited by the `ignore` rules below.
+# Dependabot version updates. Security updates are a separate repository
+# setting (Settings > Advanced Security > Dependabot security updates).
 #
 # Pinning: .github/workflows/ci.yml references actions by major tag. Pinning
 # them to commit SHAs is left to the owner (the SHAs have to be copied from the
@@ -41,7 +41,7 @@ updates:
         update-types: ["minor", "patch"]
     ignore:
       # Deliberate pins: a major bump is a migration, not a routine update.
-      # Open it by hand when planned (Dependabot security updates still apply).
+      # Open it by hand when planned.
       - dependency-name: next
         update-types: ["version-update:semver-major"]
       - dependency-name: eslint-config-next
