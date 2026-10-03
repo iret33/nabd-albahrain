@@ -132,6 +132,18 @@ describe("middleware: login redirect is built from the Host the visitor used, no
     expect(res.headers.get("location")).toBe("http://192.168.1.20:8080/admin/login");
   });
 
+  it("leaves the non-loopback bind path alone: the redirect stays on req.url's own origin so Next can relativize it (Docker's 0.0.0.0)", async () => {
+    // Next turns an absolute Location equal to its own origin into a relative one, which is right whatever
+    // scheme/host the visitor used; rebuilding it from Host/X-Forwarded-Proto would only add ways to be wrong.
+    vi.stubEnv("TRUST_PROXY", "1");
+    for (const bind of ["http://0.0.0.0:3000", "http://192.168.1.20:3000", "http://app:3000", "https://0.0.0.0:3000"]) {
+      const res = await middleware(
+        req(`${bind}/admin`, { host: "data.hekkapp.com", "x-forwarded-proto": "https", "x-forwarded-host": "data.hekkapp.com" }),
+      );
+      expect(res.headers.get("location"), bind).toBe(`${bind}/admin/login`);
+    }
+  });
+
   it("falls back to the request URL when Host is missing or malformed (never a thrown Invalid URL)", async () => {
     for (const host of ["", "bad host/../x", "user@evil.example", "evil.example:99999", "a..b"]) {
       const res = await middleware(req("http://localhost:3204/admin", host ? { host } : {}));

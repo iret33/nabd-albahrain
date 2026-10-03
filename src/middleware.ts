@@ -18,7 +18,26 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { ADMIN_COOKIE_NAME, sessionSecretFromEnv, verifySession } from "@/lib/admin-session";
-import { requestOrigin } from "@/lib/admin/request-origin";
+import { isLoopbackHostname, requestOrigin } from "@/lib/admin/request-origin";
+
+/**
+ * Where to send a logged-out visitor. `req.url` is built from the server's BIND
+ * address, and Next turns an absolute redirect to that same address into a
+ * relative `Location` (correct whatever scheme and host the visitor used, which
+ * is what the Docker image's 0.0.0.0 bind relies on today), so that path is left
+ * alone. The one bind it breaks is a literal loopback one (`HOSTNAME=127.0.0.1`
+ * behind cloudflared): NextURL rewrites 127.x.x.x to `localhost`, the origins no
+ * longer match, and visitors of https://data.hekkapp.com/admin were sent to
+ * https://localhost:<port>/admin/login. Only then, rebuild the target from the
+ * Host (and, under TRUST_PROXY=1, X-Forwarded-*) the request actually carried.
+ * A relative Location cannot be returned from middleware by hand: the Edge
+ * adapter parses it with `new NextURL()` and throws "Invalid URL" (a 500).
+ */
+function loginUrl(req: NextRequest): URL {
+  const own = new URL("/admin/login", req.url);
+  if (!isLoopbackHostname(own.hostname)) return own;
+  return new URL("/admin/login", requestOrigin(req.headers, req.url));
+}
 
 /**
  * Next 15 hands pages `searchParams` as a Promise and defines every query key
@@ -41,9 +60,7 @@ export async function middleware(req: NextRequest) {
   if ((pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login") {
     const session = req.cookies.get(ADMIN_COOKIE_NAME)?.value;
     if (!(await verifySession(session, sessionSecretFromEnv()))) {
-      // Absolute, built from the Host the visitor used (not `req.url`, which
-      // carries the server's bind address) — see request-origin.ts.
-      return NextResponse.redirect(new URL("/admin/login", requestOrigin(req.headers, req.url)));
+      return NextResponse.redirect(loginUrl(req));
     }
   }
 
