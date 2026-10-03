@@ -2,6 +2,9 @@ import type { ReactNode } from "react";
 import { listingMetadata } from "@/lib/seo";
 import { SITE_URL } from "@/lib/site";
 import { API_LIST_DEFAULT_LIMIT, API_LIST_MAX_LIMIT, API_RECORDS_DEFAULT_LIMIT, API_RECORDS_MAX_LIMIT } from "@/lib/api-v1";
+import { API_CSV_BUDGET, API_READ_BUDGET, CSV_MAX_CONCURRENT, CSV_MAX_PER_CLIENT } from "@/lib/api-limits";
+import { countPhrase, type NounForms } from "@/lib/arabic-count";
+import { MAX_ROWS_HARD_CAP, MAX_ROWS_STORED_WHEN_CAPPED } from "@/lib/row-limits";
 import { PearlLattice } from "@/components/pearl-lattice";
 
 export const metadata = listingMetadata({
@@ -10,6 +13,12 @@ export const metadata = listingMetadata({
     "واجهة JSON عامة ومجانية للقراءة فقط لكتالوج مجموعات البيانات المفتوحة لمملكة البحرين وسجلاتها، مع تصدير CSV وترقيم بالمؤشر.",
   path: "/developers",
 });
+
+// The documented budgets are read from the code (`@/lib/api-limits`), so this page cannot drift from what the
+// server enforces; the counted nouns agree with the number whatever it is (1 / 2 / 3-10 / 11+).
+const REQUEST: NounForms = { one: "طلب", oneNumber: "واحد", dual: "طلبان", dualOblique: "طلبين", few: "طلبات", many: "طلبًا" };
+const EXPORT: NounForms = { one: "تصدير", oneNumber: "واحد", dual: "تصديران", dualOblique: "تصديرين", few: "تصديرات", many: "تصديرًا" };
+const MINUTE: NounForms = { one: "دقيقة", oneNumber: "واحدة", dual: "دقيقتان", dualOblique: "دقيقتين", few: "دقائق", many: "دقيقةً" };
 
 const linkClass =
   "font-medium text-sea-900 underline decoration-pearl decoration-2 underline-offset-4 transition-colors hover:text-coral";
@@ -100,6 +109,14 @@ export default function DevelopersPage() {
             (مشروع مستقل غير رسمي)، ويحتفظ كل نص ورقم بصيغته الأصلية. للاستخدام الرسمي أو القانوني ارجع إلى المصدر. كن لطيفًا
             مع الخادم: استخدم <Inline>limit</Inline> الأكبر المسموح بدل آلاف الطلبات الصغيرة، ولا تُعد الطلب نفسه في حلقة ضيقة.
           </p>
+          <p id="limits">
+            حدود الاستخدام لكل عميل: حتى {countPhrase(API_READ_BUDGET.limit, REQUEST)} في الدقيقة على كل المسارات. وتصدير CSV له حصة أصغر:{" "}
+            {countPhrase(API_CSV_BUDGET.limit, EXPORT)} كل {countPhrase(API_CSV_BUDGET.windowMs / 60_000, MINUTE, { oblique: true })}، ولا يجري في
+            الوقت نفسه أكثر من {countPhrase(CSV_MAX_PER_CLIENT, EXPORT, { oblique: true })} لكل عميل، ولا أكثر من{" "}
+            {countPhrase(CSV_MAX_CONCURRENT, EXPORT, { oblique: true })} على الخادم كله. عند تجاوز الحد تصلك استجابة JSON برمز{" "}
+            <Inline>429</Inline> (أو <Inline>503</Inline> إن كان الخادم مشغولًا بتصديرات غيرك) ورأس <Inline>Retry-After</Inline> بعدد الثواني:
+            انتظرها ثم أعد المحاولة. لا تُخزَّن هذه الردود مؤقتًا.
+          </p>
         </section>
 
         <Endpoint id="list" path="/api/v1/datasets" title="قائمة مجموعات البيانات">
@@ -166,18 +183,31 @@ export default function DevelopersPage() {
 
         <Endpoint id="records" path="/api/v1/datasets/{id}/records" title="السجلات">
           <p>
-            ترقيم بالمؤشر (keyset) لا بالإزاحة: الصفحة 500 بنفس كلفة الأولى، ولا تتحرك قراءتك إن أضافت مزامنة صفوفًا. تأتي السجلات
-            مرتبة بمعرّفها التصاعدي.
+            ترقيم بالمؤشر (keyset) لا بالإزاحة: الصفحة 500 بنفس كلفة الأولى. تأتي السجلات مرتبة بمعرّفها التصاعدي.
+          </p>
+          <p>
+            المؤشر صالح ما دامت صفوف المجموعة كما هي. حين تتغير مجموعة في المصدر تستبدل المزامنة <strong>كل</strong> صفوفها بمعرّفات جديدة، فيُرفض
+            أي مؤشر صدر قبل ذلك بالرمز <Inline>409</Inline> والخطأ <Inline>cursor_expired</Inline> مع رابط <Inline>restart</Inline> للبدء من أول
+            سجل، بدل أن نعيد إليك صفوفًا مكررة بصمت. وإن كنت تحفظ <Inline>nextAfter</Inline> لتجلب الجديد لاحقًا، فتوقّع هذا الرد وابدأ من جديد.
           </p>
           <Params
             rows={[
-              ["after", <>معرّف السجل الأخير من استجابة سابقة (<Inline>nextAfter</Inline>). غيابه يعني البدء من أول سجل.</>],
+              [
+                "after",
+                <>
+                  معرّف السجل الأخير من استجابة سابقة (<Inline>nextAfter</Inline>)، ولا تخترع قيمة. غيابه (أو <Inline>0</Inline>) يعني البدء من
+                  أول سجل.
+                </>,
+              ],
               ["limit", `من 1 إلى ${API_RECORDS_MAX_LIMIT} (الافتراضي ${API_RECORDS_DEFAULT_LIMIT}). يُتجاهل مع CSV.`],
               [
                 "format",
                 <>
                   <Inline>json</Inline> (الافتراضي) أو <Inline>csv</Inline>: بث كل السجلات المتبقية ملفًّا واحدًا بترميز UTF-8 مع BOM ليقرأه Excel
-                  بالعربية، والصف الأول أسماء الحقول.
+                  بالعربية، والصف الأول أسماء الحقول. هو بث واحد: إن استُبدلت المجموعة أثناء التنزيل أو انقطع الاتصال يفشل التنزيل (لا يُسلَّم
+                  ملف ناقص يبدو كاملًا)، فأعد المحاولة. الرأس <Inline>X-Dataset-Partial</Inline> يصف المجموعة نفسها لا التصدير:{" "}
+                  <Inline>true</Inline> إن زادت المجموعة على {MAX_ROWS_HARD_CAP.toLocaleString("en-US")} صف فخُزّن أول{" "}
+                  {MAX_ROWS_STORED_WHEN_CAPPED.toLocaleString("en-US")} فقط.
                 </>,
               ],
             ]}
@@ -218,11 +248,23 @@ curl -OJ "${base}/datasets/live-births-by-governorate/records?format=csv"`}</Cod
           <div className="mt-4 space-y-4 text-sm leading-8 text-ink/80">
             <p>
               الأخطاء JSON دائمًا بالشكل التالي، ولا تتضمن تفاصيل داخلية: <Inline>400</Inline> لقيمة بارامتر غير صالحة (يُسمّى البارامتر في{" "}
-              <Inline>parameter</Inline>)، و<Inline>404</Inline> لمجموعة أو فئة أو جهة غير موجودة، و<Inline>500</Inline> لعطل في الخادم.
+              <Inline>parameter</Inline>)، و<Inline>404</Inline> لمجموعة أو فئة أو جهة غير موجودة، و<Inline>409</Inline> لمؤشر{" "}
+              <Inline>after</Inline> قديم (<Inline>cursor_expired</Inline>، ابدأ من <Inline>restart</Inline>)، و<Inline>429</Inline> حين تتجاوز
+              حدّك (حصة الطلبات، أو تصدير CSV آخر في الوقت نفسه من العميل ذاته؛ انتظر <Inline>Retry-After</Inline> ثانية)، و<Inline>503</Inline>{" "}
+              حين يمتلئ الخادم بتصديرات غيرك، و<Inline>500</Inline> لعطل في الخادم. لا يُخزَّن أي خطأ مؤقتًا.
             </p>
             <Code>{`HTTP/1.1 400 Bad Request
 
-{ "error": "invalid_parameter", "message": "limit must be an integer between 1 and ${API_LIST_MAX_LIMIT}", "parameter": "limit" }`}</Code>
+{ "error": "invalid_parameter", "message": "limit must be an integer between 1 and ${API_LIST_MAX_LIMIT}", "parameter": "limit" }
+
+HTTP/1.1 409 Conflict
+
+{ "error": "cursor_expired", "parameter": "after", "restart": "${base}/datasets/live-births-by-governorate/records?limit=100", ... }
+
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+
+{ "error": "rate_limited", "message": "...", "retryAfterSeconds": 30 }`}</Code>
           </div>
         </section>
       </div>

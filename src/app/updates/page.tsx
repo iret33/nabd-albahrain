@@ -1,9 +1,10 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { getPortalStats, getRecentlyUpdated } from "@/lib/queries";
+import { THEME_PAGE_SIZE, countRecentlyUpdated, getPortalStats, getRecentlyUpdated } from "@/lib/queries";
 import { getStaleAfterMs } from "@/lib/sync/config";
 import { freshnessNotice } from "@/lib/freshness-notice";
 import { groupByMonth } from "@/lib/months";
+import { clampPage, totalPagesFor } from "@/lib/page-math";
 import { listingMetadata } from "@/lib/seo";
 import {
   UPDATE_WINDOWS,
@@ -27,15 +28,35 @@ interface Props {
 const DESCRIPTION =
   "آخر مجموعات البيانات التي حدّثتها بوابة data.gov.bh الرسمية، من الأحدث إلى الأقدم ومجمّعة حسب الشهر — مع خلاصة Atom للمتابعة.";
 
-/** The all-time view is the canonical one; narrower windows fold into it (noindex, follow). */
+/**
+ * The all-time view is the canonical one; narrower windows fold into it (noindex, follow).
+ *
+ * `?page=` is clamped to the real last page before it reaches the title and canonical, like
+ * /categories and /publishers do: `?page=99999` used to title itself "صفحة 10000" and
+ * canonicalize to itself while the body showed the last page, an unbounded set of indexable
+ * duplicates. The count is one `COUNT` over the SAME where-clause as the listing
+ * (`countRecentlyUpdated`), not a second load of every row and card. A windowed view is noindex
+ * and its canonical ignores the page, so it needs no count. If the count fails (database down)
+ * the page does not break its metadata: it falls back to the plain canonical.
+ */
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const { window, page } = parseUpdatesParams(await searchParams);
+  const noindex = window !== "all";
+  let shownPage = page;
+  if (!noindex && page > 1) {
+    try {
+      shownPage = clampPage(page, totalPagesFor(await countRecentlyUpdated(null), THEME_PAGE_SIZE));
+    } catch (err) {
+      console.error("[updates] could not count datasets for the page clamp; using the plain canonical:", err);
+      shownPage = 1;
+    }
+  }
   return listingMetadata({
     title: "آخر التحديثات",
     description: DESCRIPTION,
     path: "/updates",
-    page,
-    noindex: window !== "all",
+    page: shownPage,
+    noindex,
   });
 }
 

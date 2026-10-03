@@ -71,7 +71,8 @@ export default async function PublisherPage({ params, searchParams }: Props) {
         <NumberLatin value={publisher.count} /> مجموعة بيانات
       </p>
 
-      <div className="mt-8">
+      {/* [overflow-wrap:anywhere]: an unbroken ?q= echoed by the active-query chip must wrap, not widen the page (see /search). */}
+      <div className="mt-8 [overflow-wrap:anywhere]">
         <ListingResults
           result={result}
           basePath={publisherPath(publisher.slug)}

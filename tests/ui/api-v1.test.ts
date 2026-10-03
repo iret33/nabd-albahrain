@@ -3,10 +3,12 @@ import {
   ApiParamError,
   CACHE_PUBLIC,
   CSV_BOM,
+  CSV_MAX_ROWS,
   badRequest,
   csvCell,
   csvContentDisposition,
   csvRow,
+  cursorExpired,
   jsonError,
   jsonOk,
   notFound,
@@ -16,9 +18,12 @@ import {
   parseRecordsQuery,
   parseUpdatedSince,
   preflight,
+  serverBusy,
   serverError,
   toDatasetSummary,
+  tooManyRequests,
 } from "@/lib/api-v1";
+import { INSERT_BATCH_SIZE, MAX_ROWS_HARD_CAP } from "@/lib/row-limits";
 import { SITE_URL } from "@/lib/site";
 
 const sp = (query: string) => new URLSearchParams(query);
@@ -181,7 +186,9 @@ describe("parseDatasetsQuery", () => {
     ["publisher=../../etc", "publisher"],
     ["updated_since=soon", "updated_since"],
     [`q=${"x".repeat(101)}`, "q"],
-    [`theme=${"x".repeat(101)}`, "theme"],
+    // MAX_THEME_LENGTH (200) is what the sync stores, so it is also the API's cap (it used to be 100,
+    // which made a stored 101..200 character theme from `facets.themes` unusable as a filter).
+    [`theme=${"x".repeat(201)}`, "theme"],
   ])("rejects %s with a 400 naming %s", (query, parameter) => {
     try {
       parseDatasetsQuery(sp(query));
@@ -194,6 +201,13 @@ describe("parseDatasetsQuery", () => {
 
   it("takes the first value of a repeated parameter", () => {
     expect(parseDatasetsQuery(sp("limit=5&limit=500")).limit).toBe(5);
+  });
+
+  it("accepts every theme length the sync can store (up to 200), unchanged", () => {
+    for (const length of [1, 100, 101, 150, 200]) {
+      const theme = "t".repeat(length);
+      expect(parseDatasetsQuery(sp(`theme=${theme}`)).list.theme).toBe(theme);
+    }
   });
 });
 
@@ -274,6 +288,41 @@ describe("responses", () => {
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
     expect(res.headers.get("access-control-allow-methods")).toContain("GET");
     expect(await res.text()).toBe("");
+  });
+
+  it("429 and 503 carry Retry-After, no-store and CORS (never CACHE_PUBLIC), and expose Retry-After to browsers", async () => {
+    const limited = tooManyRequests(12.2);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("13");
+    expect(limited.headers.get("cache-control")).toBe("no-store");
+    expect(limited.headers.get("access-control-allow-origin")).toBe("*");
+    expect(limited.headers.get("access-control-expose-headers")).toContain("Retry-After");
+    expect(await limited.json()).toMatchObject({ error: "rate_limited", retryAfterSeconds: 13 });
+
+    const busy = serverBusy(0);
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get("retry-after")).toBe("1"); // never 0: a client would retry in a tight loop
+    expect(busy.headers.get("cache-control")).toBe("no-store");
+    expect(await busy.json()).toMatchObject({ error: "server_busy" });
+  });
+
+  it("409 cursor_expired names the parameter, says how to restart and is never cacheable", async () => {
+    const res = cursorExpired("https://x.test/api/v1/datasets/d/records?limit=100");
+    expect(res.status).toBe(409);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(await res.json()).toMatchObject({
+      error: "cursor_expired",
+      parameter: "after",
+      restart: "https://x.test/api/v1/datasets/d/records?limit=100",
+    });
+  });
+});
+
+describe("CSV row cap", () => {
+  it("sits above everything the sync engine stores complete, so no real dataset can reach it", () => {
+    expect(CSV_MAX_ROWS).toBeGreaterThan(MAX_ROWS_HARD_CAP);
+    expect(CSV_MAX_ROWS).toBe(MAX_ROWS_HARD_CAP + INSERT_BATCH_SIZE);
   });
 });
 

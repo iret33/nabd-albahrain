@@ -9,6 +9,26 @@ import { escapeLike } from "@/lib/search";
 /** Rows per page of the records table. */
 export const RECORDS_PAGE_SIZE = 25;
 
+/**
+ * Highest `?page=` the records table's URL parser keeps: the five-digit ceiling `parsePage` already
+ * enforces. Deliberately NOT a row-count-derived figure: the data layer clamps the page to the real
+ * last page, so the parser only has to stay out of its way. (Its default of 10,000 pages cut the
+ * view off at row 250,000 of a dataset the sync stores in full up to 300,000 rows.)
+ */
+export const MAX_RECORDS_PAGE = 99_999;
+
+/**
+ * The keyset cursor (`after`) does not belong to the dataset's current rows: a sync replaced them
+ * since the cursor was issued, or the value is not a record id of this dataset at all. The reader
+ * must start again from the first page; continuing would silently re-read rows under new ids.
+ */
+export class StaleCursorError extends Error {
+  constructor() {
+    super("the record cursor no longer matches this dataset's current data");
+    this.name = "StaleCursorError";
+  }
+}
+
 /** Longest in-table search text accepted (characters). */
 export const MAX_RECORDS_QUERY_LENGTH = 60;
 

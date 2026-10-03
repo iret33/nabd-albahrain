@@ -14,11 +14,17 @@
  *    stale-while-revalidate=3600`. This is the only place the site sends a
  *    public cache header; HTML pages stay uncacheable so a refresh shows up at
  *    once. Errors are `no-store`.
+ *  - Every route is rate limited per client and CSV exports also hold an
+ *    in-flight slot (`@/lib/api-limits`); a refusal is a JSON 429 (this client)
+ *    or 503 (the server is full) with `Retry-After`, never cacheable.
+ *  - A keyset cursor is valid only within one generation of a dataset's rows:
+ *    a stale one is a 409 `cursor_expired` (see the records route).
  *  - CSV cells that a spreadsheet could execute are neutralized (see `csvCell`).
  */
 
 import { LIST_SORTS, MAX_QUERY_LENGTH, type ListParamsInput } from "@/lib/list-query";
-import { isValidDatasetId, isValidPublisherSlug } from "@/lib/cache-config";
+import { MAX_THEME_LENGTH, isValidDatasetId, isValidPublisherSlug } from "@/lib/cache-config";
+import { MAX_ROWS_HARD_CAP, INSERT_BATCH_SIZE } from "@/lib/row-limits";
 import { SITE_URL } from "@/lib/site";
 
 export const API_LIST_DEFAULT_LIMIT = 30;
@@ -26,14 +32,21 @@ export const API_LIST_MAX_LIMIT = 100;
 export const API_RECORDS_DEFAULT_LIMIT = 100;
 export const API_RECORDS_MAX_LIMIT = 1000;
 export const API_MAX_PAGE = 10_000;
-/** Safety stop for a streamed CSV (the sync engine stores at most ~50,000 rows per dataset anyway). */
-export const CSV_MAX_ROWS = 200_000;
+/**
+ * Safety stop for a streamed CSV: a runaway-loop guard, NOT a limit a real dataset may reach. The sync
+ * engine stores up to MAX_ROWS_HARD_CAP (300,000) rows COMPLETE (only a dataset above that is cut to
+ * 50,000 and marked partial), so the stop sits one insert batch above it. Hitting it is an error, never
+ * a quiet end of file: see `createCsvStream`.
+ */
+export const CSV_MAX_ROWS = MAX_ROWS_HARD_CAP + INSERT_BATCH_SIZE;
 
 export const CACHE_PUBLIC = "public, s-maxage=300, stale-while-revalidate=3600";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "Accept, Content-Type",
+  // Without this a browser client cannot read `Retry-After` from a 429/503, nor the CSV's own headers.
+  "Access-Control-Expose-Headers": "Retry-After, Content-Disposition, X-Dataset-Partial",
   "Access-Control-Max-Age": "86400",
 } as const;
 
@@ -59,11 +72,42 @@ export function jsonOk(data: unknown): Response {
   });
 }
 
-export function jsonError(status: number, error: string, message: string, extra: Record<string, unknown> = {}): Response {
+export function jsonError(
+  status: number,
+  error: string,
+  message: string,
+  extra: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify({ error, message, ...extra }), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...CORS_HEADERS },
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...CORS_HEADERS, ...headers },
   });
+}
+
+/** 429: this client is over its request budget or its share of concurrent downloads. Never cacheable. */
+export function tooManyRequests(retryAfterSeconds: number, message = "Too many requests. Please slow down and retry."): Response {
+  const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
+  return jsonError(429, "rate_limited", message, { retryAfterSeconds: seconds }, { "Retry-After": String(seconds) });
+}
+
+/** 503: every export slot on this server is taken. Not the client's fault, so not a 429; never cacheable. */
+export function serverBusy(retryAfterSeconds: number, message = "The server is busy with other downloads. Please retry shortly."): Response {
+  const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
+  return jsonError(503, "server_busy", message, { retryAfterSeconds: seconds }, { "Retry-After": String(seconds) });
+}
+
+/**
+ * 409: the `after` cursor belongs to rows that a sync has since replaced (or is not a record id of this
+ * dataset at all). `restart` is the same request without `after`.
+ */
+export function cursorExpired(restart: string): Response {
+  return jsonError(
+    409,
+    "cursor_expired",
+    "The dataset was refreshed since this cursor was issued (or the cursor is not one of its record ids). Restart from the first page by omitting `after`.",
+    { parameter: "after", restart },
+  );
 }
 
 export const badRequest = (err: ApiParamError): Response =>
@@ -134,7 +178,7 @@ export function parseDatasetsQuery(sp: URLSearchParams): DatasetsQuery {
   if (q.length > MAX_QUERY_LENGTH) throw new ApiParamError("q", `q must be at most ${MAX_QUERY_LENGTH} characters`);
 
   const theme = (sp.get("theme") ?? "").trim();
-  if (theme.length > 100) throw new ApiParamError("theme", "theme must be at most 100 characters");
+  if (theme.length > MAX_THEME_LENGTH) throw new ApiParamError("theme", `theme must be at most ${MAX_THEME_LENGTH} characters`);
 
   const publisher = (sp.get("publisher") ?? "").trim();
   if (publisher !== "" && !isValidPublisherSlug(publisher)) {

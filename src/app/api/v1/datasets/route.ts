@@ -14,6 +14,7 @@
  */
 
 import { listDatasets } from "@/lib/queries";
+import { guardApi } from "@/lib/api-limits";
 import {
   ApiParamError,
   badRequest,
@@ -32,6 +33,8 @@ export function OPTIONS() {
 }
 
 export async function GET(req: Request) {
+  const limited = guardApi(req);
+  if (limited) return limited;
   try {
     const query = parseDatasetsQuery(new URL(req.url).searchParams);
     const result = await listDatasets(query.list, { pageSize: query.limit, updatedSince: query.updatedSince });

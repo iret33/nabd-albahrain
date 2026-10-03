@@ -9,7 +9,10 @@
  * each field is normalized the same way before comparing, so alef/ya/ta
  * variants, diacritics and Arabic-Indic digits all line up):
  *
- *   +10  the whole phrase (tokens joined by a space) occurs in a title
+ *   +10  the whole phrase (tokens joined by a space) occurs in a title, read
+ *        either as written or with the Arabic article/clitic stripped from each
+ *        title word (the tokens had theirs stripped: "تعداد السكان" is the
+ *        phrase "تعداد سكان", which only the stripped title contains)
  *   per token:
  *   +5   token occurs in a title (Arabic or English)
  *   +2   token occurs in the publisher or the theme (independent of the title)
@@ -22,7 +25,7 @@
  * finally on id, so the order is total and stable across requests.
  */
 
-import { normalizeSearch } from "@/lib/search";
+import { normalizeSearch, stripArabicPrefix } from "@/lib/search";
 
 export const RANK_WEIGHTS = {
   phraseInTitle: 10,
@@ -47,7 +50,12 @@ export function scoreMatch(fields: RankableFields, tokens: readonly string[]): n
 
   let score = 0;
   const phrase = tokens.join(" ");
-  if (titles.some((t) => t.includes(phrase))) score += RANK_WEIGHTS.phraseInTitle;
+  // Query tokens come out of `tokenize` without their ال/بال/لل prefix, so the phrase has to be looked for in
+  // the title the same way: as written (an unprefixed phrase) or word by word stripped (a prefixed one).
+  const strippedTitles = titles.map((t) => t.split(" ").map(stripArabicPrefix).join(" "));
+  if (titles.some((t) => t.includes(phrase)) || strippedTitles.some((t) => t.includes(phrase))) {
+    score += RANK_WEIGHTS.phraseInTitle;
+  }
 
   for (const token of tokens) {
     const inTitle = titles.some((t) => t.includes(token));

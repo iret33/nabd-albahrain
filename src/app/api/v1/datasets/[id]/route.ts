@@ -7,6 +7,7 @@
 import { asFields, asStatsJson, asVizConfig, getDatasetById } from "@/lib/queries";
 import { stripHtml } from "@/lib/format";
 import { SITE_URL } from "@/lib/site";
+import { guardApi } from "@/lib/api-limits";
 import { jsonOk, notFound, parseDatasetId, preflight, serverError, toDatasetSummary } from "@/lib/api-v1";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,9 @@ export function OPTIONS() {
   return preflight();
 }
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const limited = guardApi(req);
+  if (limited) return limited;
   try {
     const id = parseDatasetId((await ctx.params).id);
     if (!id) return notFound("Dataset");
