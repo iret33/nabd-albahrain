@@ -27,7 +27,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { startSyncInBackground } from "@/lib/sync/engine";
 import { startRecomputeInBackground } from "@/lib/sync/recompute";
-import { isSyncRequestAuthorized } from "@/lib/sync/auth";
+import { authorizeSyncRequest, syncAuthFailureResponse } from "@/lib/sync/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -37,9 +37,8 @@ function isTrue(searchParams: URLSearchParams, name: string): boolean {
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await isSyncRequestAuthorized(req))) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await authorizeSyncRequest(req);
+  if (!auth.ok) return syncAuthFailureResponse(auth) as NextResponse;
 
   const { searchParams } = new URL(req.url);
   const datasetId = searchParams.get("dataset") || undefined;

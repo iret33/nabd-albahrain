@@ -17,14 +17,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getLockState } from "@/lib/sync/lock";
-import { isSyncRequestAuthorized } from "@/lib/sync/auth";
+import { authorizeSyncRequest, syncAuthFailureResponse } from "@/lib/sync/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  if (!(await isSyncRequestAuthorized(req))) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await authorizeSyncRequest(req);
+  if (!auth.ok) return syncAuthFailureResponse(auth) as NextResponse;
 
   const [lock, latestLog] = await Promise.all([
     getLockState(),

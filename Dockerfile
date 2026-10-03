@@ -105,6 +105,11 @@ USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# Let the app own SIGTERM/SIGINT (src/lib/sync/runtime.ts): a container stop in
+# the middle of a sync then aborts the run, marks its SyncLog row "aborted" and
+# releases the sync lock immediately, instead of leaving "running" state behind
+# for the 10-minute stale window. Without a running sync it exits at once.
+ENV NEXT_MANUAL_SIG_HANDLE=true
 
 # Liveness only (/api/health deliberately does not touch Postgres). Gives plain
 # `docker run` the same signal docker-compose.yml's healthcheck gives compose.

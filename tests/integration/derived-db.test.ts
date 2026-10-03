@@ -1,25 +1,28 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { PrismaClient } from "@prisma/client";
+import { RUN_INTEGRATION, setupHarness, type Harness } from "./helpers";
 import type { CatalogField } from "@/lib/sync/schemas";
 import type { VizConfig } from "@/lib/sync/derived";
 
 /**
- * Runs the derivation engine over every dataset currently in the database
- * (the 10 mock-portal datasets after `pnpm sync`) and checks the invariants
+ * Runs the derivation engine over every dataset synced from the in-process
+ * mock portal (seeded through the shared harness, so this file does not
+ * depend on what other integration files left in the database) and checks the invariants
  * the unit tests cannot: the sentence on the dataset page and the card/home
  * metric are the SAME number, and rows synced by the previous engine version
  * (old vizConfig shapes, straight from Postgres) still render.
  *
  * Opt-in: needs a migrated Postgres at DATABASE_URL and RUN_INTEGRATION=1.
  */
-describe.skipIf(process.env.RUN_INTEGRATION !== "1")("derived fields over real database rows", () => {
-  let prisma: PrismaClient;
+describe.skipIf(!RUN_INTEGRATION)("derived fields over real database rows", () => {
+  let h: Harness;
 
   beforeAll(async () => {
-    ({ prisma } = await import("@/lib/prisma"));
+    h = await setupHarness();
+    await h.reset();
+    await h.seed();
   });
   afterAll(async () => {
-    await prisma?.$disconnect();
+    await h?.close();
   });
 
   it("every dataset: headline, summary sentence and card metric agree; old stored rows still extract", async () => {
@@ -27,6 +30,7 @@ describe.skipIf(process.env.RUN_INTEGRATION !== "1")("derived fields over real d
     const { extractFeaturedMetric } = await import("@/lib/chart-data");
     const { formatSummaryNumber } = await import("@/lib/headline");
 
+    const prisma = h.prisma;
     const datasets = await prisma.dataset.findMany({ orderBy: { id: "asc" } });
     expect(datasets.length).toBeGreaterThan(0);
 

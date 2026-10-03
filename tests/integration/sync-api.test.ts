@@ -22,7 +22,14 @@ describe.skipIf(!RUN_INTEGRATION)("HTTP API (route handlers + Postgres + in-proc
   let ready: typeof import("@/app/api/health/ready/route");
   let health: typeof import("@/app/api/health/route");
   let rateLimit: typeof import("@/lib/rate-limit");
+  let session: typeof import("@/lib/admin-session");
   let app: http.Server;
+
+  /** Headers of a browser logged into /admin: signed session cookie + same-origin marker. */
+  async function adminHeaders(): Promise<Record<string, string>> {
+    const token = await session.createSession(ADMIN_TOKEN);
+    return { cookie: `${session.ADMIN_COOKIE_NAME}=${token}`, "sec-fetch-site": "same-origin" };
+  }
 
   beforeAll(async () => {
     h = await setupHarness();
@@ -34,6 +41,7 @@ describe.skipIf(!RUN_INTEGRATION)("HTTP API (route handlers + Postgres + in-proc
     ready = await import("@/app/api/health/ready/route");
     health = await import("@/app/api/health/route");
     rateLimit = await import("@/lib/rate-limit");
+    session = await import("@/lib/admin-session");
 
     // A stand-in "web server": forwards the engine's invalidation POST to the real route handler.
     app = http.createServer(async (req, res) => {
@@ -377,7 +385,7 @@ describe.skipIf(!RUN_INTEGRATION)("HTTP API (route handlers + Postgres + in-proc
       expect((await status.GET(req("GET", "/api/sync/status"))).status).toBe(401);
       expect(await h.prisma.syncLog.count()).toBe(0);
 
-      const viaCookie = await sync.POST(req("POST", "/api/sync", { headers: { cookie: `admin_token=${ADMIN_TOKEN}` } }));
+      const viaCookie = await sync.POST(req("POST", "/api/sync", { headers: await adminHeaders() }));
       expect(viaCookie.status).toBe(202);
       await waitIdle();
     });
@@ -466,7 +474,7 @@ describe.skipIf(!RUN_INTEGRATION)("HTTP API (route handlers + Postgres + in-proc
     });
 
     it("works with the admin cookie and rejects malformed bodies", async () => {
-      expect((await call({}, { cookie: `admin_token=${ADMIN_TOKEN}` })).status).toBe(200);
+      expect((await call({}, await adminHeaders())).status).toBe(200);
       expect((await call("{")).status).toBe(400);
       expect((await call({ tags: "datasets" })).status).toBe(400);
       expect((await call({ tags: ["bad tag!"] })).status).toBe(400);

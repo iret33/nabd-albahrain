@@ -36,6 +36,8 @@ services:
         # NEXT_PUBLIC_* is inlined at build time, so it must be a build arg.
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://data.hekkapp.com}
     restart: unless-stopped
+    # Time for an in-flight sync to abort cleanly and release its lock on stop.
+    stop_grace_period: 30s
     env_file:
       - .env
     environment:
@@ -54,6 +56,11 @@ services:
       - PUBLIC_REFRESH_DATASET_COOLDOWN_SECONDS
       - PUBLIC_REFRESH_MAX_RECORDS
       - SYNC_CONCURRENCY
+      # Where the sync engine POSTs "drop your caches" after a run. Inside the
+      # compose network the web service is reachable as `app`; this also makes
+      # one-off `docker compose run --rm app sync ...` containers (which have no
+      # web server of their own) invalidate the running server's caches.
+      - APP_INTERNAL_URL=${APP_INTERNAL_URL:-http://app:3000}
       # 1 when running behind the Cloudflare Tunnel / a reverse proxy: per-client
       # rate limits (login, sync API, public refresh) then key on the real IP.
       # With 0 every visitor shares one bucket.

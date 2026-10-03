@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidateTag } from "next/cache";
 import { z } from "zod";
-import { isSyncRequestAuthorized } from "@/lib/sync/auth";
+import { authorizeSyncRequest, syncAuthFailureResponse } from "@/lib/sync/auth";
 import { readTextCapped } from "@/lib/sync/body";
 
 export const dynamic = "force-dynamic";
@@ -34,9 +34,8 @@ const BodySchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  if (!(await isSyncRequestAuthorized(req))) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await authorizeSyncRequest(req);
+  if (!auth.ok) return syncAuthFailureResponse(auth) as NextResponse;
 
   const text = await readTextCapped(req, MAX_BODY_BYTES);
   if (text === null) return NextResponse.json({ error: "invalid_body" }, { status: 400 });

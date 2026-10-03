@@ -17,7 +17,15 @@ export async function register() {
     if (process.env.NEXT_PHASE === "phase-production-build") return;
 
     const { assertProductionEnv } = await import("@/lib/env");
-    assertProductionEnv();
+    try {
+      assertProductionEnv();
+    } catch (err) {
+      // `next start` / `node server.js` would otherwise keep serving 500s for
+      // every request (including /api/health). Exit so the supervisor
+      // (Docker restart policy, systemd) surfaces the misconfiguration.
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
 
     const { startScheduler } = await import("@/lib/sync/scheduler");
     startScheduler();
