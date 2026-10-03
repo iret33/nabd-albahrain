@@ -20,6 +20,39 @@
 
   --background: var(--sand-50);
   --foreground: var(--ink);
+
+  /*
+   * Font stacks. `src/app/fonts/fonts.ts` loads one self-hosted family per
+   * script subset (each with its own unicode-range) and layout.tsx puts their
+   * variables on <html>; these chain them (Latin first, then Arabic) and end
+   * with the metric-adjusted fallback faces declared below.
+   */
+  --font-tajawal: var(--font-tajawal-latin), var(--font-tajawal-arabic), "Tajawal Fallback";
+  --font-ibm-plex-sans-arabic: var(--font-plex-latin), var(--font-plex-latin-ext), var(--font-plex-arabic),
+    "IBM Plex Sans Arabic Fallback";
+}
+
+/*
+ * Arial re-metricked to the web fonts (the values the Google loader had
+ * computed for these families), so the swap from fallback to web font moves
+ * almost nothing. They must be the LAST entries of the stacks above: Arial has
+ * Arabic glyphs, so anywhere earlier it would shadow the Arabic web font.
+ */
+@font-face {
+  font-family: "Tajawal Fallback";
+  src: local("Arial");
+  ascent-override: 67.93%;
+  descent-override: 37.71%;
+  line-gap-override: 21.13%;
+  size-adjust: 94.66%;
+}
+@font-face {
+  font-family: "IBM Plex Sans Arabic Fallback";
+  src: local("Arial");
+  ascent-override: 107.25%;
+  descent-override: 41.02%;
+  line-gap-override: 0%;
+  size-adjust: 101.17%;
 }
 
 @theme inline {

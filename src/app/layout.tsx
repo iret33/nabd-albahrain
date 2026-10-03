@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Tajawal, IBM_Plex_Sans_Arabic } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { SITE_URL } from "@/lib/site";
@@ -11,6 +10,7 @@ import {
   TITLE_TEMPLATE,
   alternatesFor,
 } from "@/lib/seo";
+import { plexArabic, plexLatin, plexLatinExt, tajawalArabic, tajawalLatin } from "./fonts/fonts";
 import "./globals.css";
 
 /**
@@ -21,20 +21,6 @@ import "./globals.css";
  * Declaring it once here covers the static-looking routes too (/about, the 404).
  */
 export const dynamic = "force-dynamic";
-
-const tajawal = Tajawal({
-  variable: "--font-tajawal",
-  subsets: ["arabic", "latin"],
-  weight: ["700", "900"],
-  display: "swap",
-});
-
-const ibmPlexSansArabic = IBM_Plex_Sans_Arabic({
-  variable: "--font-ibm-plex-sans-arabic",
-  subsets: ["arabic", "latin"],
-  weight: ["400", "500", "600"],
-  display: "swap",
-});
 
 /**
  * Defaults every page inherits. `title.template` appends the site name, so
@@ -60,6 +46,15 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image" },
 };
 
+/** The font families' CSS variables; `globals.css` chains them into `--font-tajawal` / `--font-ibm-plex-sans-arabic`. */
+const FONT_VARIABLES = [
+  tajawalLatin.variable,
+  tajawalArabic.variable,
+  plexLatin.variable,
+  plexLatinExt.variable,
+  plexArabic.variable,
+].join(" ");
+
 export const viewport: Viewport = {
   themeColor: THEME_COLOR,
   width: "device-width",
@@ -75,7 +70,7 @@ export default function RootLayout({
     <html
       lang="ar"
       dir="rtl"
-      className={`${tajawal.variable} ${ibmPlexSansArabic.variable} h-full antialiased`}
+      className={`${FONT_VARIABLES} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col bg-sand-50 text-ink">
         <a
