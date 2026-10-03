@@ -1,29 +1,109 @@
 /**
- * Guards every `/admin/*` route except the login form itself (Phase 6).
- * No user accounts — a single shared `ADMIN_TOKEN` compared server-side;
- * `/admin/login`'s submit handler (`src/app/admin/login/actions.ts`) sets
- * the httpOnly cookie checked here on a match.
+ * Three jobs, in this order:
+ *
+ * 0. Turn a path with malformed %-encoding (a pasted link cut in the middle of a
+ *    multi-byte sequence, `/dataset/%E0%A4%A`) into the site's own Arabic 404.
+ *    Next rejects such a path BEFORE any route or `not-found.tsx` runs, with its
+ *    bare English "400 Bad Request" page that has none of the site chrome; a
+ *    rewrite to a path that does not exist reaches the normal 404 page. The
+ *    query string is NOT checked (malformed %-sequences there are tolerated).
+ * 1. Strip query keys that crash Next 15's `searchParams` Promise (see
+ *    `UNSAFE_QUERY_KEYS`) before ANY page code runs.
+ * 2. Guard every `/admin/*` route except the login form itself. No user
+ *    accounts: `/admin/login`'s submit handler (`src/app/admin/login/actions.ts`)
+ *    checks the shared `ADMIN_TOKEN` and sets a SIGNED, expiring session cookie
+ *    (`src/lib/admin-session.ts`); this middleware only accepts that cookie.
+ *    The old raw-token cookie (`admin_token`) is not recognised, so any session
+ *    issued by the previous code is simply logged out.
+ *
+ * Runs on the Edge runtime: it may import only runtime-neutral modules, which
+ * is why the session code uses Web Crypto and lives outside `lib/sync/auth.ts`
+ * (that file pulls in `node:crypto`). The admin page re-checks the session
+ * itself (`requireAdmin`) — middleware is one layer, not the only one.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
-import { ADMIN_COOKIE_NAME } from "@/lib/sync/auth";
+import { ADMIN_COOKIE_NAME, sessionSecretFromEnv, verifySession } from "@/lib/admin-session";
+import { isLoopbackHostname, requestOrigin } from "@/lib/admin/request-origin";
 
-export function middleware(req: NextRequest) {
-  if (req.nextUrl.pathname === "/admin/login") {
-    return NextResponse.next();
+/**
+ * Where to send a logged-out visitor. `req.url` is built from the server's BIND
+ * address, and Next turns an absolute redirect to that same address into a
+ * relative `Location` (correct whatever scheme and host the visitor used, which
+ * is what the Docker image's 0.0.0.0 bind relies on today), so that path is left
+ * alone. The one bind it breaks is a literal loopback one (`HOSTNAME=127.0.0.1`
+ * behind cloudflared): NextURL rewrites 127.x.x.x to `localhost`, the origins no
+ * longer match, and visitors of https://data.hekkapp.com/admin were sent to
+ * https://localhost:<port>/admin/login. Only then, rebuild the target from the
+ * Host (and, under TRUST_PROXY=1, X-Forwarded-*) the request actually carried.
+ * A relative Location cannot be returned from middleware by hand: the Edge
+ * adapter parses it with `new NextURL()` and throws "Invalid URL" (a 500).
+ */
+function loginUrl(req: NextRequest): URL {
+  const own = new URL("/admin/login", req.url);
+  if (!isLoopbackHostname(own.hostname)) return own;
+  return new URL("/admin/login", requestOrigin(req.headers, req.url));
+}
+
+/**
+ * Next 15 hands pages `searchParams` as a Promise and defines every query key
+ * as an own property of it; a `?constructor=` key therefore replaces the
+ * Promise's `.constructor` with a string and `await searchParams` throws
+ * ("The .constructor property is not an object") — HTTP 500 on /search,
+ * /categories/*, /publishers/*, /dataset/*, /admin/login, and a 200 with an
+ * empty body on /updates (its loading.tsx commits the status first). Fuzzing
+ * every other Object.prototype / Promise name found no other key that breaks.
+ * Nothing in this app emits the key, so dropping it loses nothing.
+ *
+ * TODO: remove once Next is upgraded to a release containing the upstream fix
+ * (vercel/next.js issue #98148, closed) — check the fixed version first.
+ */
+const UNSAFE_QUERY_KEYS = ["constructor"] as const;
+
+function hasMalformedEncoding(pathname: string): boolean {
+  try {
+    decodeURIComponent(pathname);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export async function middleware(req: NextRequest) {
+  const { pathname } = req.nextUrl;
+
+  if (hasMalformedEncoding(pathname)) {
+    return NextResponse.rewrite(new URL("/__malformed-path", req.url), { status: 404 });
   }
 
-  const cookieToken = req.cookies.get(ADMIN_COOKIE_NAME)?.value;
-  const expected = process.env.ADMIN_TOKEN;
+  if ((pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login") {
+    const session = req.cookies.get(ADMIN_COOKIE_NAME)?.value;
+    if (!(await verifySession(session, sessionSecretFromEnv()))) {
+      return NextResponse.redirect(loginUrl(req));
+    }
+  }
 
-  if (!expected || cookieToken !== expected) {
-    const loginUrl = new URL("/admin/login", req.url);
-    return NextResponse.redirect(loginUrl);
+  // Decoded match (`?%63onstructor=1` hits the same property), so this works on
+  // the parsed keys, not on the raw query string. A rewrite keeps the visible
+  // URL and the method; a redirect would work too and cannot loop.
+  if (UNSAFE_QUERY_KEYS.some((key) => req.nextUrl.searchParams.has(key))) {
+    const clean = req.nextUrl.clone();
+    for (const key of UNSAFE_QUERY_KEYS) clean.searchParams.delete(key);
+    return NextResponse.rewrite(clean);
   }
 
   return NextResponse.next();
 }
 
+/**
+ * Static literal (Next requires it). Every page request passes through: a
+ * `has: [{ type: "query", key: "constructor" }]` condition would let the public
+ * site skip the middleware, but Next's matcher treats an EMPTY value
+ * (`?constructor=`, bare `?constructor`) as absent and so would miss two of the
+ * three crashing forms. The cost is one cheap Edge call per page view; `api/`
+ * and `_next/` (assets, RSC data) are excluded because route handlers read a
+ * plain URLSearchParams, not the `searchParams` Promise.
+ */
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/admin/:path*", "/((?!api/|_next/).*)"],
 };

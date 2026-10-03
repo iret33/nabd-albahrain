@@ -1,0 +1,13 @@
+# Local-development override. Copy to `docker-compose.override.yml`
+# (git-ignored; Compose merges that file automatically) when you run
+# `pnpm dev` on the host and only want the database from Docker:
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   docker compose up -d db
+#
+# Postgres is published to LOOPBACK only. Never copy this onto a production
+# host: the production database must not be reachable from the host network.
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

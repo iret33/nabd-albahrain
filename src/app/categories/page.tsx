@@ -1,25 +1,27 @@
-import type { Metadata } from "next";
 import { getThemeCounts } from "@/lib/queries";
+import { listingMetadata } from "@/lib/seo";
 import { ThemeTile } from "@/components/theme-tile";
 import { EmptyState } from "@/components/empty-state";
 
-export const metadata: Metadata = {
-  title: "الفئات | نبض البحرين",
+export const metadata = listingMetadata({
+  title: "الفئات",
   description: "تصفح كل فئات مجموعات البيانات المفتوحة في مملكة البحرين حسب الموضوع.",
-};
+  path: "/categories",
+});
 
-// Phase 8 fix: without this, `next build` tries to statically prerender
-// this DB-backed route at *build* time, which requires a live DATABASE_URL
-// — broke the Docker build. See the longer explanation on `src/app/(home)/page.tsx`.
-export const dynamic = "force-dynamic";
-
+/**
+ * No route-level loading.tsx here (or on /publishers): a loading.tsx at this
+ * segment would also wrap the child route /categories/[theme] in Suspense and
+ * turn its `notFound()` into a soft 200. The theme list is a cached read, so
+ * the page simply awaits it.
+ */
 export default async function CategoriesPage() {
   const themes = await getThemeCounts();
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
       <h1 className="font-display text-3xl font-black text-sea-900">الفئات</h1>
-      <p className="mt-2 max-w-2xl text-sm leading-7 text-ink/60">
+      <p className="mt-2 max-w-2xl text-sm leading-7 text-ink-muted">
         كل مجموعات البيانات المفتوحة في بوابة data.gov.bh مصنّفة حسب الموضوع — اختر فئة
         لاستعراض مجموعاتها.
       </p>
@@ -31,11 +33,13 @@ export default async function CategoriesPage() {
             description="لم تُستورد بيانات الفئات من data.gov.bh حتى الآن. عد لاحقًا بعد اكتمال المزامنة."
           />
         ) : (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <ul role="list" className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {themes.map((t) => (
-              <ThemeTile key={t.theme} theme={t.theme} count={t.count} />
+              <li key={t.theme}>
+                <ThemeTile theme={t.theme} count={t.count} />
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
     </div>

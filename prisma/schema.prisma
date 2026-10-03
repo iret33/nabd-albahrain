@@ -1,9 +1,16 @@
 // Prisma schema for نبض البحرين (Nabd Al-Bahrain).
 //
-// Phase 1 scaffolded this file with a placeholder `ScaffoldCheck` model just
-// to prove migrations ran end-to-end against Postgres. Phase 2 (this
-// commit) replaces it with the real data models that back the sync engine:
-// Dataset, DatasetRecord, SyncLog, SyncLock.
+// Five models back the whole app:
+//   Dataset        one row per data.gov.bh dataset: metadata, search text,
+//                  derived chart/summary columns and per-dataset sync state
+//   DatasetRecord  the stored rows of each dataset (JSON, bulk-replaced on sync)
+//   SyncLog        one row per sync/recompute run (audit trail + live progress)
+//   SyncState      singleton: portal-wide freshness bookkeeping and cooldowns
+//   SyncLock       singleton mutex so only one run executes at a time
+//
+// The pg_trgm GIN indexes on Dataset are created by hand-written migrations and
+// declared here only so `prisma migrate dev` does not propose to drop them.
+// Applied migrations are never edited (their checksums are verified).
 
 generator client {
   provider = "prisma-client-js"
@@ -16,8 +23,7 @@ datasource db {
 
 /// One row per dataset on data.gov.bh (id = the ODS dataset_id).
 /// Metadata is upserted on every catalog sync; stats/vizConfig/chartData/
-/// summaryAr are computed by computeDerivedFields() (stubbed in Phase 2,
-/// implemented in Phase 3).
+/// summaryAr are computed by computeDerivedFields() (src/lib/sync/derived.ts).
 model Dataset {
   id String @id // dataset_id from ODS, e.g. "12-live-births-by-..."
 
@@ -31,7 +37,7 @@ model Dataset {
   sourceCount  Int  @default(0) // rows actually stored in DatasetRecord (may be capped, see syncStatus)
   fieldsJson   Json // raw `fields` array from the catalog entry
 
-  // Derived/computed fields — filled in by computeDerivedFields() (Phase 3).
+  // Derived/computed fields — filled in by computeDerivedFields() (src/lib/sync/derived.ts).
   statsJson Json?
   vizConfig Json?
   chartData Json?
@@ -42,10 +48,45 @@ model Dataset {
   syncStatus     String    @default("pending") // pending | ok | partial | error
   syncError      String?
 
+  // --- Change detection / freshness (migration 20261003000000_freshness_and_search) ---
+  /// Opaque version string of the catalog entry the stored data was synced
+  /// from (see computeSourceVersion in src/lib/sync). Compared against the
+  /// freshly-fetched catalog entry to decide "did the portal publish new
+  /// data?" without comparing clocks.
+  syncedVersion      String?
+  /// Last time the catalog was consulted for this dataset, whether or not
+  /// anything changed ("last checked" in the UI).
+  lastCheckedAt      DateTime?
+  /// Per-dataset cooldown anchor for the public "refresh this dataset" button.
+  refreshRequestedAt DateTime?
+  /// Set when a complete catalog pass no longer contains this dataset.
+  /// Public queries filter `removedAt: null`; the dataset page still renders
+  /// removed rows with a banner. Cleared if the id reappears.
+  removedAt          DateTime?
+  /// DERIVED_VERSION (src/lib/sync/derived.ts) the statsJson/vizConfig/
+  /// chartData/summaryAr columns were computed with. Null = pre-versioning.
+  derivedVersion     Int?
+
+  // --- Portal-provided Arabic/discovery metadata ---
+  titleAr    String?
+  keywords   String[] @default([])
+  license    String?
+  /// normalizeSearch(title + titleAr + publisher + theme + keywords +
+  /// description), see src/lib/search.ts. GIN trigram indexed.
+  searchText String   @default("")
+
   records DatasetRecord[]
 
   @@index([theme])
   @@index([syncStatus])
+  @@index([removedAt])
+  @@index([publisher])
+  @@index([sourceModified])
+  // pg_trgm GIN indexes (created by hand-written migrations). Declared here so
+  // `prisma migrate dev` sees them and does not generate a migration dropping them.
+  @@index([titleClean(ops: raw("gin_trgm_ops"))], type: Gin, map: "Dataset_titleClean_trgm_idx")
+  @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "Dataset_description_trgm_idx")
+  @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin, map: "Dataset_searchText_trgm_idx")
 }
 
 /// One row per record inside a dataset's export. Bulk-replaced on every
@@ -56,25 +97,64 @@ model DatasetRecord {
   data      Json
   dataset   Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
 
-  @@index([datasetId])
+  @@index([datasetId, id])
 }
 
 /// Audit trail: one row per full sync run.
 model SyncLog {
   id           Int       @id @default(autoincrement())
-  trigger      String // "cli" | "api" | ...
+  trigger      String // "cli" | "api" | "auto" | "public" | ...
   startedAt    DateTime  @default(now())
   finishedAt   DateTime?
   processed    Int       @default(0)
-  succeeded    Int       @default(0)
+  succeeded    Int       @default(0) // includes skipped (unchanged) datasets
   failed       Int       @default(0)
   failuresJson Json? // [{ datasetId, error }]
+
+  /// Row is created when the run starts (status "running") and finalized in
+  /// a finally block, so crashed/failed runs are recorded too.
+  status      String  @default("running") // running | success | partial | failed | aborted
+  error       String? // top-level failure message (sanitized)
+  /// Datasets in scope for this run (for live progress: processed/total).
+  total       Int     @default(0)
+  /// Datasets left untouched because nothing changed upstream.
+  skipped     Int     @default(0)
+  /// Datasets whose records were actually re-downloaded and re-derived.
+  updated     Int     @default(0)
+  /// "all" | "changed" | "dataset:<id>" | "recompute"
+  scope       String?
+  /// { updated: string[], deferred: string[], removed: string[], added: string[] }
+  changedJson Json?
+}
+
+/// Singleton row (id always 1): portal-wide freshness bookkeeping.
+model SyncState {
+  id                  Int       @id @default(1)
+  /// Last time a complete catalog pass succeeded (even if nothing changed).
+  lastCatalogCheckAt  DateTime?
+  /// Last time a run finished with status success/partial.
+  lastSuccessAt       DateTime?
+  /// Last time any dataset's data actually changed (a dataset was re-synced).
+  lastDataChangeAt    DateTime?
+  /// The scheduler's own clock: set only by UNRESTRICTED catalog-wide runs (no
+  /// maxRecords / maxDatasets / limit / datasetId), i.e. scheduler, admin and CLI
+  /// runs - never by a public refresh press, which defers large datasets and so
+  /// must not postpone the scheduled pass that handles them.
+  lastFullPassAt      DateTime?
+  /// Cooldown anchor for the public catalog-wide refresh.
+  lastPublicRefreshAt DateTime?
 }
 
 /// Singleton row (id always 1) used as a mutex so only one sync runs at a
-/// time. A `since` older than 2 hours is treated as stale and auto-released.
+/// time. A lock whose heartbeat (or `since`) is older than ~10 minutes is
+/// treated as stale and may be taken over.
 model SyncLock {
-  id      Int       @id @default(1)
-  running Boolean   @default(false)
-  since   DateTime?
+  id          Int       @id @default(1)
+  running     Boolean   @default(false)
+  since       DateTime?
+  /// Random token of the run that owns the lock; release only matches it.
+  holder      String?
+  /// Refreshed every ~30s by the running sync; the lock is stale when this
+  /// (or `since` when null) is older than ~10 minutes.
+  heartbeatAt DateTime?
 }

@@ -1,72 +1,86 @@
-import Link from "next/link";
 import type { Metadata } from "next";
-import { getDatasetsByPublisherSlug } from "@/lib/queries";
-import { DatasetCard } from "@/components/dataset-card";
-import { Pagination } from "@/components/pagination";
-import { EmptyState } from "@/components/empty-state";
+import { notFound } from "next/navigation";
+import { THEME_PAGE_SIZE, findPublisher, findTheme, listDatasets } from "@/lib/queries";
+import { activeFilters, parseListParams, type RawSearchParams } from "@/lib/list-query";
+import { clampPage, totalPagesFor } from "@/lib/page-math";
+import { breadcrumbJsonLd, jsonLd, listingMetadata, truncateText } from "@/lib/seo";
+import { Bidi } from "@/components/bidi";
+import { Breadcrumb } from "@/components/breadcrumb";
+import { ListingResults } from "@/components/listing-results";
 import { NumberLatin } from "@/components/number-latin";
 
 interface Props {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<Exclude<RawSearchParams, URLSearchParams>>;
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { slug } = await params;
-  const { publisherName } = await getDatasetsByPublisherSlug(slug, 1);
-  if (!publisherName) return { title: "جهة غير معروفة | نبض البحرين" };
-  return {
-    title: `${publisherName} | نبض البحرين`,
-    description: `مجموعات البيانات المفتوحة الصادرة عن ${publisherName} في بوابة data.gov.bh الرسمية لمملكة البحرين.`,
-  };
+const publisherPath = (slug: string) => `/publishers/${slug}`;
+
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  // The slug is checked against the cached publisher list (never reflected unchecked into metadata).
+  const publisher = await findPublisher((await params).slug);
+  if (!publisher) return { title: "جهة غير معروفة", robots: { index: false } };
+
+  const lp = parseListParams(await searchParams);
+  const filtered = activeFilters(lp, ["publisher"]).length > 0 || lp.sort !== "title";
+  const page = clampPage(lp.page, totalPagesFor(publisher.count, THEME_PAGE_SIZE));
+  return listingMetadata({
+    title: publisher.name,
+    description: truncateText(
+      `مجموعات البيانات المفتوحة الصادرة عن ${publisher.name} (${publisher.count} مجموعة) في بوابة data.gov.bh الرسمية لمملكة البحرين.`,
+    ),
+    path: publisherPath(publisher.slug),
+    page,
+    noindex: filtered,
+  });
 }
 
 /**
- * Same visual pattern as /categories/[theme] — including its "unknown
- * value renders a plain-Arabic empty state instead of a 404" behavior
- * (see the note in skeletons.tsx / README's "Public pages" section on why
- * a route-level `loading.tsx` and `notFound()` don't mix). An unmatched
- * slug is genuinely ambiguous to tell apart from "a real publisher with
- * zero synced datasets" from the URL alone, so both degrade the same way.
+ * Same shape as /categories/[theme]: the slug is checked against the cached publisher list
+ * first (a true 404 for an unknown one), and there is no loading.tsx or <Suspense> for the
+ * same two reasons (it would soften the 404, and the filter bar/pager must work without JS).
  */
 export default async function PublisherPage({ params, searchParams }: Props) {
-  const { slug } = await params;
-  const sp = await searchParams;
-  const page = Math.max(1, Number(sp.page) || 1);
+  const publisher = await findPublisher((await params).slug);
+  if (!publisher) notFound();
 
-  const { items, total, totalPages, publisherName } = await getDatasetsByPublisherSlug(slug, page);
+  const lp = parseListParams(await searchParams);
+  const theme = lp.theme ? await findTheme(lp.theme) : null;
+  const result = await listDatasets({ ...lp, publisher: publisher.slug, theme: theme ? theme.theme : null });
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
-      <nav aria-label="مسار التنقل" className="text-sm text-ink/60">
-        <Link href="/publishers" className="rounded transition-colors hover:text-coral">
-          الجهات الحكومية
-        </Link>
-      </nav>
+    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd(breadcrumbJsonLd([{ name: "الجهات الحكومية", path: "/publishers" }, { name: publisher.name }])),
+        }}
+      />
+      <Breadcrumb
+        items={[
+          { label: "الرئيسية", href: "/" },
+          { label: "الجهات الحكومية", href: "/publishers" },
+          { label: publisher.name },
+        ]}
+      />
 
       <h1 className="mt-2 font-display text-2xl font-black text-sea-900 sm:text-3xl">
-        {publisherName ?? "جهة غير معروفة"}
+        <Bidi text={publisher.name} />
       </h1>
-      <p className="mt-2 text-sm text-ink/60">
-        <NumberLatin value={total} /> مجموعة بيانات
+      <p className="mt-2 text-sm text-ink-muted">
+        <NumberLatin value={publisher.count} /> مجموعة بيانات
       </p>
 
-      <div className="mt-8">
-        {items.length === 0 ? (
-          <EmptyState
-            title="لا توجد مجموعات بيانات لهذه الجهة"
-            description="قد تكون هذه الجهة غير معروفة أو لم تكتمل مزامنة بياناتها بعد."
-          />
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {items.map((d) => (
-                <DatasetCard key={d.id} dataset={d} />
-              ))}
-            </div>
-            <Pagination page={page} totalPages={totalPages} hrefForPage={(p) => `/publishers/${slug}?page=${p}`} />
-          </>
-        )}
+      {/* [overflow-wrap:anywhere]: an unbroken ?q= echoed by the active-query chip must wrap, not widen the page (see /search). */}
+      <div className="mt-8 [overflow-wrap:anywhere]">
+        <ListingResults
+          result={result}
+          basePath={publisherPath(publisher.slug)}
+          omit={["publisher"]}
+          showQuery
+          queryLabel="ابحث في مجموعات هذه الجهة"
+          countOnlyWhenFiltered
+        />
       </div>
     </div>
   );

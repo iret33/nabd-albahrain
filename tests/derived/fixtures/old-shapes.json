@@ -1,0 +1,335 @@
+{
+  "energyConsumption": {
+    "vizConfig": {
+      "type": "area",
+      "grain": "month",
+      "aggregate": "sum",
+      "geoFields": [],
+      "measureField": "value",
+      "measureLabel": "Value",
+      "temporalField": "year",
+      "temporalLabel": "Year"
+    },
+    "chartData": [
+      {
+        "value": 14000,
+        "period": "2014-01"
+      },
+      {
+        "value": 14420,
+        "period": "2015-01"
+      },
+      {
+        "value": 14840,
+        "period": "2016-01"
+      },
+      {
+        "value": 15260,
+        "period": "2017-01"
+      },
+      {
+        "value": 15680,
+        "period": "2018-01"
+      },
+      {
+        "value": 16100,
+        "period": "2019-01"
+      },
+      {
+        "value": 16520,
+        "period": "2020-01"
+      },
+      {
+        "value": 16940,
+        "period": "2021-01"
+      },
+      {
+        "value": 17360,
+        "period": "2022-01"
+      },
+      {
+        "value": 17780,
+        "period": "2023-01"
+      },
+      {
+        "value": 18200,
+        "period": "2024-01"
+      },
+      {
+        "value": 18620,
+        "period": "2025-01"
+      }
+    ],
+    "summaryAr": "آخر قيمة مسجلة: 18620 في 2025-01، بتغير +2.3% عن الفترة السابقة."
+  },
+  "population": {
+    "vizConfig": {
+      "type": "multi-line",
+      "grain": "month",
+      "aggregate": "sum",
+      "geoFields": [],
+      "seriesField": "nationality",
+      "seriesLabel": "Nationality",
+      "measureField": "value",
+      "measureLabel": "Value",
+      "seriesValues": [
+        "Non-Bahraini",
+        "Bahraini"
+      ],
+      "temporalField": "year",
+      "temporalLabel": "Year",
+      "seriesOverflow": false
+    },
+    "chartData": [
+      {
+        "period": "2010-01",
+        "Bahraini": 700000,
+        "Non-Bahraini": 840000
+      },
+      {
+        "period": "2011-01",
+        "Bahraini": 721000,
+        "Non-Bahraini": 865200
+      },
+      {
+        "period": "2012-01",
+        "Bahraini": 742000,
+        "Non-Bahraini": 890400
+      },
+      {
+        "period": "2013-01",
+        "Bahraini": 763000,
+        "Non-Bahraini": 915600
+      },
+      {
+        "period": "2014-01",
+        "Bahraini": 784000,
+        "Non-Bahraini": 940800
+      },
+      {
+        "period": "2015-01",
+        "Bahraini": 805000,
+        "Non-Bahraini": 966000
+      },
+      {
+        "period": "2016-01",
+        "Bahraini": 826000,
+        "Non-Bahraini": 991200
+      },
+      {
+        "period": "2017-01",
+        "Bahraini": 847000,
+        "Non-Bahraini": 1016400
+      },
+      {
+        "period": "2018-01",
+        "Bahraini": 868000,
+        "Non-Bahraini": 1041600
+      },
+      {
+        "period": "2019-01",
+        "Bahraini": 889000,
+        "Non-Bahraini": 1066800
+      },
+      {
+        "period": "2020-01",
+        "Bahraini": 910000,
+        "Non-Bahraini": 1092000
+      },
+      {
+        "period": "2021-01",
+        "Bahraini": 931000,
+        "Non-Bahraini": 1117200
+      },
+      {
+        "period": "2022-01",
+        "Bahraini": 952000,
+        "Non-Bahraini": 1142400
+      },
+      {
+        "period": "2023-01",
+        "Bahraini": 973000,
+        "Non-Bahraini": 1167600
+      },
+      {
+        "period": "2024-01",
+        "Bahraini": 994000,
+        "Non-Bahraini": 1192800
+      },
+      {
+        "period": "2025-01",
+        "Bahraini": 1015000,
+        "Non-Bahraini": 1218000
+      }
+    ],
+    "summaryAr": "آخر قيمة مسجلة: 2233000 في 2025-01، بتغير +2.1% عن الفترة السابقة."
+  },
+  "unemployment": {
+    "vizConfig": {
+      "type": "area",
+      "grain": "month",
+      "aggregate": "mean",
+      "geoFields": [],
+      "measureField": "rate",
+      "measureLabel": "Rate",
+      "temporalField": "date",
+      "temporalLabel": "Date"
+    },
+    "chartData": [
+      {
+        "value": 3.5,
+        "period": "2020-01"
+      },
+      {
+        "value": 3.7,
+        "period": "2020-04"
+      },
+      {
+        "value": 3.9,
+        "period": "2020-07"
+      },
+      {
+        "value": 3.6,
+        "period": "2020-10"
+      },
+      {
+        "value": 3.8,
+        "period": "2021-01"
+      },
+      {
+        "value": 3.5,
+        "period": "2021-04"
+      },
+      {
+        "value": 3.7,
+        "period": "2021-07"
+      },
+      {
+        "value": 3.9,
+        "period": "2021-10"
+      },
+      {
+        "value": 3.6,
+        "period": "2022-01"
+      },
+      {
+        "value": 3.8,
+        "period": "2022-04"
+      },
+      {
+        "value": 3.5,
+        "period": "2022-07"
+      },
+      {
+        "value": 3.7,
+        "period": "2022-10"
+      },
+      {
+        "value": 3.9,
+        "period": "2023-01"
+      },
+      {
+        "value": 3.6,
+        "period": "2023-04"
+      },
+      {
+        "value": 3.8,
+        "period": "2023-07"
+      },
+      {
+        "value": 3.5,
+        "period": "2023-10"
+      },
+      {
+        "value": 3.7,
+        "period": "2024-01"
+      },
+      {
+        "value": 3.9,
+        "period": "2024-04"
+      },
+      {
+        "value": 3.6,
+        "period": "2024-07"
+      },
+      {
+        "value": 3.8,
+        "period": "2024-10"
+      },
+      {
+        "value": 3.5,
+        "period": "2025-01"
+      },
+      {
+        "value": 3.7,
+        "period": "2025-04"
+      },
+      {
+        "value": 3.9,
+        "period": "2025-07"
+      },
+      {
+        "value": 3.6,
+        "period": "2025-10"
+      }
+    ],
+    "summaryAr": "آخر قيمة مسجلة: 3.6 في 2025-10، بتغير -7.7% عن الفترة السابقة."
+  },
+  "schools": {
+    "vizConfig": {
+      "type": "bar-stacked",
+      "xField": "governorate",
+      "xLabel": "Governorate",
+      "aggregate": "sum",
+      "geoFields": [],
+      "seriesField": "type",
+      "seriesLabel": "Type",
+      "measureField": "value",
+      "measureLabel": "Value",
+      "seriesValues": [
+        "Private",
+        "Public"
+      ],
+      "otherBucketed": false,
+      "seriesOverflow": false
+    },
+    "chartData": [
+      {
+        "Public": 41,
+        "Private": 56,
+        "category": "Southern"
+      },
+      {
+        "Public": 34,
+        "Private": 49,
+        "category": "Northern"
+      },
+      {
+        "Public": 27,
+        "Private": 42,
+        "category": "Muharraq"
+      },
+      {
+        "Public": 20,
+        "Private": 35,
+        "category": "Capital"
+      }
+    ],
+    "summaryAr": "الفئة الأعلى: «Southern» بقيمة 97."
+  },
+  "airQuality": {
+    "vizConfig": {
+      "type": "table",
+      "reason": "geo",
+      "geoFields": [
+        {
+          "name": "geo",
+          "type": "geo_point_2d",
+          "label": "Location"
+        }
+      ]
+    },
+    "chartData": null,
+    "summaryAr": "تحتوي قاعدة البيانات على 8 سجلاً عبر 2 حقلاً."
+  }
+}

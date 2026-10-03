@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Advisories are published against code that did not change, so the audit
+  # step also runs on a schedule (default branch only).
+  schedule:
+    - cron: "23 4 * * 1"
+
+# Least privilege for every job: read the repository, nothing else. There are no
+# secrets in this workflow, it never publishes anything, and it triggers on
+# `pull_request` (not `pull_request_target`), so fork PRs cannot reach secrets.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Supply chain: third-party actions below are referenced by major tag. Pinning
+# them to commit SHAs (`uses: owner/repo@<40-char sha> # vX.Y.Z`) is left to the
+# repository owner / Dependabot: the SHAs must be copied from the upstream
+# release pages and cannot be invented or resolved offline. .github/dependabot.yml
+# keeps github-actions, npm and docker up to date, and Dependabot rewrites a
+# pinned SHA and its version comment together, so pin and keep Dependabot on.
+
+jobs:
+  check:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Same major as docker-compose.yml. The superuser role lets migration 2
+    # run `CREATE EXTENSION pg_trgm`, exactly as it does in compose.
+    #
+    # The database is NOT called `nabd`: the integration harness
+    # (tests/integration/helpers.ts) deliberately refuses to wipe a database
+    # named exactly `nabd`, the production default in docker-compose.yml and
+    # .env.example. Keep the name identical in the three places below
+    # (POSTGRES_DB, pg_isready -d, DATABASE_URL); pg_isready succeeds for a
+    # database that does not exist, so a mismatch only shows up as a failing
+    # `prisma migrate deploy`. tests/security/deploy-config.test.ts pins this.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nabd
+          POSTGRES_PASSWORD: nabd
+          POSTGRES_DB: nabd_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nabd -d nabd_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://nabd:nabd@localhost:5432/nabd_ci
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      # No later step pushes or fetches with git credentials, so do not leave
+      # the token in .git/config.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # No `version:` — pnpm/action-setup reads package.json's "packageManager",
+      # the same pin the Dockerfile and local development use.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec prisma generate
+
+      # Proves every committed migration applies to an empty database.
+      - run: pnpm exec prisma migrate deploy
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      # Unit tests plus the Postgres-backed integration tests (skipped locally
+      # unless RUN_INTEGRATION=1).
+      - name: Test
+        run: pnpm test
+        env:
+          RUN_INTEGRATION: "1"
+
+      # `next build` reads no secrets and needs no tokens (the production-env
+      # check runs at server start, never at build time; the Docker job below
+      # builds the same way).
+      - name: Build
+        run: pnpm build
+
+      # Only critical advisories fail the build.
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=critical
+
+      # High advisories are surfaced as a warning annotation on every run
+      # instead of hiding behind the critical-only gate, but do not block
+      # unrelated changes. Known and accepted today: deepmerge-ts (prisma's
+      # config loader: unreachable, there is no prisma.config.ts, and Prisma 6
+      # has no fixed release). sharp is locked to >= 0.35.4 and /_next/image is
+      # off (images.unoptimized). Anything NEW in this list needs a human look.
+      - name: Report high-severity advisories (non-blocking)
+        run: |
+          if ! pnpm audit --prod --audit-level=high; then
+            echo "::warning title=High-severity advisories::pnpm audit --prod found high-severity advisories. Check the step log and compare with the accepted list in .github/workflows/ci.yml."
+          fi
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only (nothing is pushed). A fresh checkout has no public/ and no
+      # .env, so this catches Dockerfile regressions such as the missing-public
+      # COPY that broke the first clean `docker compose up --build`.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          # What /api/health/ready reports as `version` in the built image.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

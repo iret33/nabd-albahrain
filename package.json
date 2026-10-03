@@ -6,28 +6,48 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "eslint",
-    "sync": "tsx src/lib/sync/cli.ts"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "sync": "tsx src/lib/sync/cli.ts",
+    "sync:force": "tsx src/lib/sync/cli.ts --force",
+    "sync:recompute": "tsx src/lib/sync/cli.ts --recompute",
+    "build:cli": "node scripts/build-cli.mjs",
+    "mock:ods": "node scripts/mock-ods.mjs",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio"
   },
   "dependencies": {
-    "next": "15.5.22",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "@prisma/client": "^6.2.1",
+    "next": "15.5.27",
+    "react": "^19",
+    "react-dom": "^19",
     "recharts": "^2.15.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "^0.28.1",
     "eslint": "^9",
-    "eslint-config-next": "15.5.22",
+    "eslint-config-next": "15.5.27",
     "prisma": "^6.2.1",
     "tailwindcss": "^4",
     "tsx": "^4.19.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  },
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22"
   }
 }

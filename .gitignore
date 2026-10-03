@@ -30,10 +30,22 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (.env.example is intentionally tracked)
-.env
-.env.local
-.env.*.local
+# env files: ignore every .env* (.env.production, .env.staging, ...) so real
+# secrets cannot be committed or COPY'd into an image; only the template is tracked
+.env*
+!.env.example
+
+# local compose override (copy of docker-compose.override.example.yml)
+docker-compose.override.yml
+
+# local Claude Code state (settings, worktrees, scratch) — never committed
+/.claude/
+
+# build outputs & test artifacts (/coverage is listed under "testing" above)
+/dist
+/playwright-report
+/test-results
+/blob-report
 
 # vercel
 .vercel

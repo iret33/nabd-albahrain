@@ -1,40 +1,19 @@
-import type { ReactNode } from "react";
+import { MixedBidiText } from "@/components/bidi";
 
 /**
  * `summaryAr` (and similar) are pre-baked Arabic sentences generated once at
- * sync time (`src/lib/sync/derived.ts`) with Latin-digit numbers already
- * embedded as plain text — e.g. "آخر قيمة مسجلة: 42403 في 2026، بتغير
- * -49.5% عن الفترة السابقة." Per the design spec, every numeric figure must
- * be wrapped in a `dir="ltr"` Latin-tabular-digit span even when it's part
- * of a larger Arabic sentence, not just when it's its own prop. Since these
- * sentences arrive as a single flat string (not structured pieces), this
- * component finds each numeric token (optionally signed, with a decimal
- * point, and an optional trailing `%`/`٪`) and wraps just that token —
- * everything else renders as plain Arabic text, untouched.
+ * sync time (`src/lib/sync/derived.ts`) with Latin-digit numbers and source
+ * labels already embedded as plain text, e.g. "آخر قيمة مسجلة: 42,403 في 2025،
+ * بتغير -49.5% عن الفترة السابقة." Every numeric figure must be set in a
+ * `dir="ltr"` tabular-digit span even inside an Arabic sentence, and a Latin
+ * word next to a number ("مؤشرات Health 2000") must stay in one LTR isolate.
+ *
+ * The implementation lives in one place, `MixedBidiText` (components/bidi.tsx,
+ * tokenized by `src/lib/text.ts` + `src/lib/numeric-tokens.ts`); this name is
+ * kept for the call sites and tests that render stored summaries. Because it
+ * runs at render time it also repairs summaries stored before the sync-time
+ * formatting was fixed.
  */
-const NUMERIC_TOKEN = /[+-]?\d[\d.,]*(?:\s?[%٪])?/g;
-
 export function ArabicTextWithNumbers({ text }: { text: string }) {
-  if (!text) return null;
-
-  const parts: ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  const re = new RegExp(NUMERIC_TOKEN);
-  let match: RegExpExecArray | null;
-
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    parts.push(
-      <span key={key++} dir="ltr" className="tabular-figures">
-        {match[0]}
-      </span>,
-    );
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-
-  return <>{parts}</>;
+  return <MixedBidiText text={text} />;
 }

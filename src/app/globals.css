@@ -7,6 +7,12 @@
   --sand-50: #f7f3ec;
   --sand-100: #ede7da;
   --ink: #17262a;
+  /*
+   * Informational text (counts, dates, labels, intros). Replaces the old
+   * `text-ink/40..60` washes, which measured 2.4-4.2:1. Computed: 6.4:1 on
+   * white, 5.8:1 on sand-50, 5.2:1 on sand-100 (all >= 4.5:1, WCAG AA).
+   */
+  --ink-muted: #52616a;
   --pearl: #c9a961;
   --coral: #a6473f;
   --line-dark: rgba(237, 231, 218, 0.14);
@@ -14,6 +20,39 @@
 
   --background: var(--sand-50);
   --foreground: var(--ink);
+
+  /*
+   * Font stacks. `src/app/fonts/fonts.ts` loads one self-hosted family per
+   * script subset (each with its own unicode-range) and layout.tsx puts their
+   * variables on <html>; these chain them (Latin first, then Arabic) and end
+   * with the metric-adjusted fallback faces declared below.
+   */
+  --font-tajawal: var(--font-tajawal-latin), var(--font-tajawal-arabic), "Tajawal Fallback";
+  --font-ibm-plex-sans-arabic: var(--font-plex-latin), var(--font-plex-latin-ext), var(--font-plex-arabic),
+    "IBM Plex Sans Arabic Fallback";
+}
+
+/*
+ * Arial re-metricked to the web fonts (the values the Google loader had
+ * computed for these families), so the swap from fallback to web font moves
+ * almost nothing. They must be the LAST entries of the stacks above: Arial has
+ * Arabic glyphs, so anywhere earlier it would shadow the Arabic web font.
+ */
+@font-face {
+  font-family: "Tajawal Fallback";
+  src: local("Arial");
+  ascent-override: 67.93%;
+  descent-override: 37.71%;
+  line-gap-override: 21.13%;
+  size-adjust: 94.66%;
+}
+@font-face {
+  font-family: "IBM Plex Sans Arabic Fallback";
+  src: local("Arial");
+  ascent-override: 107.25%;
+  descent-override: 41.02%;
+  line-gap-override: 0%;
+  size-adjust: 101.17%;
 }
 
 @theme inline {
@@ -22,6 +61,7 @@
   --color-sand-50: var(--sand-50);
   --color-sand-100: var(--sand-100);
   --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
   --color-pearl: var(--pearl);
   --color-coral: var(--coral);
   --color-line-dark: var(--line-dark);
@@ -57,16 +97,173 @@ body {
   }
 }
 
-/* Visible keyboard focus states */
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-[tabindex]:focus-visible {
-  outline: 2px solid var(--pearl);
-  outline-offset: 2px;
-  border-radius: 4px;
+/*
+ * Base-layer rules, so Tailwind utilities (`focus:outline-none` on <main>,
+ * `focus-visible:outline-pearl` on the skip link, ...) can still override them;
+ * an unlayered rule would beat every utility regardless of specificity.
+ */
+@layer base {
+  /*
+   * The header is only sticky from `lg` up (on phones it would eat a fifth of
+   * the viewport), so anchors and focus-driven scrolling only need to clear it
+   * there. 6rem covers the one-row header with room to spare.
+   */
+  html {
+    scroll-padding-top: 1rem;
+  }
+  @media (min-width: 1024px) {
+    html {
+      scroll-padding-top: 6rem;
+    }
+  }
+
+  /*
+   * Visible keyboard focus: a 2px sea-900 ring (15:1 on sand and white, well over
+   * the 3:1 non-text minimum). No border-radius override: modern browsers curve
+   * the outline along the element's own radius, so pills stay pills. Programmatic
+   * focus targets (`tabindex="-1"`, e.g. <main> after the skip link) get no ring.
+   */
+  :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid var(--sea-900);
+    outline-offset: 2px;
+  }
+
+  /* On the dark sea bands sea-900 would vanish; pearl is 7.5:1 there. */
+  .surface-dark :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline-color: var(--pearl);
+  }
+}
+
+/* Horizontally scrollable rows (mobile nav) without a visible scrollbar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * "More to scroll" cue for a horizontally scrollable box (the records table): a
+ * soft shadow on each edge that still has hidden content, CSS only, no scroll
+ * listener. Put `scroll-cue` on a wrapper and `scroll-cue-track` on the scrolling
+ * box inside it; the wrapper's two shadows are driven by the box's scroll
+ * position (scroll-driven animations: the right edge, where an RTL table starts,
+ * fades in once it has scrolled, the left edge fades out when its end is reached),
+ * and stay invisible when nothing overflows.
+ *
+ * Not `background-attachment: local` shadows: Chromium positions those wrongly in
+ * an RTL scroller (the covers follow the content as if it were LTR, so the shadow
+ * showed on the side with nothing hidden). Without scroll-driven animation
+ * support (Firefox, older Safari) there is simply no shadow; phones still get the
+ * one-line hint above the table.
+ */
+@supports (animation-timeline: scroll()) {
+  .scroll-cue {
+    timeline-scope: --scroll-cue;
+  }
+  .scroll-cue-track {
+    scroll-timeline: --scroll-cue inline;
+  }
+  .scroll-cue::before,
+  .scroll-cue::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    width: 1.25rem;
+    pointer-events: none;
+    opacity: 0;
+    animation-duration: 1ms; /* ignored by a scroll timeline; keeps the shorthand valid */
+    animation-timing-function: linear;
+    animation-fill-mode: both;
+    animation-timeline: --scroll-cue;
+  }
+  /* The start of an RTL scroller is its right edge: hidden content appears there after the first scroll. */
+  .scroll-cue::before {
+    right: 0;
+    border-radius: 0 1rem 1rem 0;
+    background: linear-gradient(to left, rgb(23 38 42 / 0.2), rgb(23 38 42 / 0));
+    animation-name: scroll-cue-in;
+    animation-range: 0 1rem;
+  }
+  /* Its end is the left edge: content stays hidden there until the end is reached. */
+  .scroll-cue::after {
+    left: 0;
+    border-radius: 1rem 0 0 1rem;
+    background: linear-gradient(to right, rgb(23 38 42 / 0.2), rgb(23 38 42 / 0));
+    animation-name: scroll-cue-out;
+    animation-range: calc(100% - 1rem) 100%;
+  }
+}
+@keyframes scroll-cue-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes scroll-cue-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * Print. Outside any @layer on purpose: unlayered rules beat Tailwind's layered
+ * utilities (`flex`, `bg-sea-900`, ...) without `!important`. Component-level
+ * hides use `print:hidden` (header, link list, download/share/refresh buttons,
+ * search forms, the pager); what stays on paper is the content and its
+ * provenance: breadcrumb, freshness, the chart with its legend and caption, the
+ * facts, the records table with its "showing 1 to 25 of 44" line (a stylesheet
+ * cannot print all rows, so the line must say it is a part), source and license.
+ */
+@page {
+  /* Symmetric margins: the site is RTL, and the browser's own URL/date line needs room. */
+  margin: 14mm;
+}
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .pearl-lattice,
+  .scroll-cue::before,
+  .scroll-cue::after {
+    display: none;
+  }
+  /* Search boxes anywhere (404 page, listings, home) are controls, not content. */
+  form[role="search"] {
+    display: none;
+  }
+  /* The dark bands lose their background on paper, and their light text with it. */
+  .surface-dark,
+  .surface-dark * {
+    background: transparent !important;
+    color: var(--ink) !important;
+    box-shadow: none !important;
+  }
+  /* The chart's colors, the legend swatches and the theme chips are information. */
+  figure,
+  [style*="background"] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tr {
+    break-inside: avoid;
+  }
 }
 
 /* Pearl lattice divider — fading dot-grid, masked to fade downward */

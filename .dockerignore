@@ -1,12 +1,54 @@
+# Keep the build context small and — more importantly — keep secrets and
+# local state out of the image.
+#
+# Docker matches a pattern WITHOUT a leading `**/` against root-relative paths
+# only (unlike .gitignore, where `.env*` matches at any depth), so everything
+# that must be excluded wherever it sits is listed twice: bare (root) and with
+# `**/`. `COPY . .` (builder) and `COPY --from=builder /app/prisma|public`
+# (runner) would otherwise carry a developer's prisma/.env, a stray key or a
+# nested node_modules into the image layers.
+# tests/security/deploy-config.test.ts feeds this file to a Docker-semantics
+# matcher and pins the cases below.
+
+# dependencies / build output (rebuilt inside the image)
 node_modules
+**/node_modules
 .next
-.git
-.env
-.env.local
-.env.*.local
-*.tsbuildinfo
-npm-debug.log*
-.DS_Store
-coverage
+dist
 out
 build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# VCS, CI and editor/tool state
+.git
+**/.git
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+
+# every env file (.env, .env.local, .env.production, ...) at ANY depth.
+# Configuration is injected at runtime via compose `env_file`; nothing secret
+# may be baked in. The template is the only env-looking file that is kept, and
+# `!.env.example` must stay AFTER the `**/.env*` line (the last match wins).
+.env*
+**/.env*
+!.env.example
+
+# credentials and registry config, wherever they sit. If a private registry
+# token is ever needed at build time use a BuildKit secret mount
+# (`RUN --mount=type=secret`), never a copied .npmrc.
+**/*.pem
+**/*.key
+**/.npmrc
+
+# not needed to build or run the app
+tests
+test-results
+playwright-report
+*.md
+docker-compose*.yml
+npm-debug.log*
