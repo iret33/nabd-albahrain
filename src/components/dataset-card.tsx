@@ -49,6 +49,8 @@ export function DatasetCard({
   const title = displayTitle(dataset);
   const subtitle = altTitle(dataset);
   const removed = !!dataset.removedAt;
+  const showsStoredOfTotal =
+    dataset.syncStatus === "partial" && dataset.sourceCount > 0 && dataset.sourceCount < dataset.recordsCount;
   const modified = dataset.sourceModified ?? null;
   const dateValue = modified ?? dataset.lastSyncedAt ?? null;
 
@@ -112,9 +114,16 @@ export function DatasetCard({
       )}
 
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-dashed border-line-light pt-3 text-xs text-ink-muted">
-        <span>
-          <NumberLatin value={dataset.recordsCount} /> سجل
-        </span>
+        {showsStoredOfTotal ? (
+          // A partial dataset stores only its first rows: say "50,000 of 12,345,678", not the portal's total alone.
+          <span>
+            <NumberLatin value={dataset.sourceCount} /> من <NumberLatin value={dataset.recordsCount} /> سجل
+          </span>
+        ) : (
+          <span>
+            <NumberLatin value={dataset.recordsCount} /> سجل
+          </span>
+        )}
         {dateValue ? (
           <span>
             {modified ? "عُدّلت" : "آخر مزامنة"}{" "}

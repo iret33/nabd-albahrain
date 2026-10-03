@@ -12,7 +12,8 @@ export function EmptyState({
   children,
 }: {
   title: string;
-  description?: string;
+  /** Plain text, or nodes when it quotes user text that needs a bidi isolate. */
+  description?: ReactNode;
   children?: ReactNode;
 }) {
   return (

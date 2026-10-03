@@ -239,7 +239,7 @@ export function ActiveFilterChips({
           <Link
             href={removeFilterHref(basePath, params, f.key, omit)}
             aria-label={`إزالة عامل التصفية: ${plain(f)}`}
-            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-ink/30 bg-white px-3.5 text-sm font-medium text-ink transition-colors hover:border-coral hover:text-coral"
+            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-ink/55 bg-white px-3.5 text-sm font-medium text-ink transition-colors hover:border-coral hover:text-coral"
           >
             <span>{describe(f)}</span>
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">

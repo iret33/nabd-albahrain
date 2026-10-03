@@ -54,7 +54,7 @@ function WindowChips({ current }: { current: UpdateWindow }) {
                 className={`inline-flex min-h-11 items-center rounded-full border px-4 text-sm font-medium transition-colors ${
                   active
                     ? "border-sea-900 bg-sea-900 text-sand-50"
-                    : "border-ink/30 bg-white text-ink hover:border-coral hover:text-coral"
+                    : "border-ink/55 bg-white text-ink hover:border-coral hover:text-coral"
                 }`}
               >
                 {UPDATE_WINDOW_LABELS[w]}
@@ -127,7 +127,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
             {window !== "all" && (
               <Link
                 href={updatesHref("all")}
-                className="inline-flex min-h-11 items-center rounded-full border border-ink/30 bg-white px-5 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral"
+                className="inline-flex min-h-11 items-center rounded-full border border-ink/55 bg-white px-5 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral"
               >
                 عرض كل التحديثات
               </Link>

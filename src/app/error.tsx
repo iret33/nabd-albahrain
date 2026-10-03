@@ -61,7 +61,7 @@ export default function GlobalError({
         </button>
         <Link
           href="/"
-          className="inline-flex min-h-11 items-center rounded-full border border-ink/30 px-6 py-3 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral"
+          className="inline-flex min-h-11 items-center rounded-full border border-ink/55 px-6 py-3 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral"
         >
           الصفحة الرئيسية
         </Link>

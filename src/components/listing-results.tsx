@@ -10,7 +10,7 @@ import { Pagination } from "@/components/pagination";
 
 const GRID = "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3";
 const actionLink =
-  "inline-flex min-h-11 items-center rounded-full border border-ink/30 bg-white px-5 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral";
+  "inline-flex min-h-11 items-center rounded-full border border-ink/55 bg-white px-5 text-sm font-bold text-ink transition-colors hover:border-coral hover:text-coral";
 
 /**
  * Everything under the page header of a dataset listing: the filter bar, the
@@ -82,7 +82,12 @@ export function ListingResults({
     body = params.q ? (
       <EmptyState
         title="لا توجد نتائج لبحثك — جرّب كلمة أخرى"
-        description={`لم نعثر على مجموعات بيانات تطابق «${params.q}»${hasOtherFilters ? " مع عوامل التصفية المختارة" : ""}. جرّب كلمات أقل أو مرادفًا آخر.`}
+        description={
+          <>
+            لم نعثر على مجموعات بيانات تطابق <QueryText q={params.q} />
+            {hasOtherFilters ? " مع عوامل التصفية المختارة" : ""}. جرّب كلمات أقل أو مرادفًا آخر.
+          </>
+        }
       >
         {hasOtherFilters && (
           <Link href={listHref(basePath, params, { theme: null, publisher: null, since: null, hasChart: false }, omit)} className={actionLink}>
