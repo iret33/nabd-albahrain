@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { derive, field, years, type Rec } from "./helpers";
 import { extractFeaturedMetric } from "@/lib/chart-data";
+import { computeHeadline, type HeadlineSource } from "@/lib/headline";
 import type { VizConfig } from "@/lib/sync/derived";
 
 /** Group F3: the numeric total tier and total-only means on the non-temporal chart types, and provisional years with a separate Month column. */
@@ -146,5 +147,29 @@ describe("rows persisted by the previous engine version (DERIVED_VERSION 2) befo
       { period: "2022", "Non-Bahraini": 880, Bahraini: 720 },
     ];
     expect(extractFeaturedMetric(v2, rows)).toMatchObject({ value: 1600, period: "2022", basis: "sum-of-series" });
+  });
+});
+
+describe("render-time numeric total (rows that predate `totalKey`)", () => {
+  const src = (over: Partial<HeadlineSource>): HeadlineSource => ({
+    type: "multi-line",
+    aggregate: "sum",
+    seriesValues: ["Capital", "Muharraq", "Northern", "Kingdom"],
+    seriesOverflow: false,
+    ...over,
+  });
+  const rows = [2021, 2022, 2023, 2024].map((y, i) => ({ period: String(y), Capital: 10 + i, Muharraq: 20, Northern: 30 + i, Kingdom: 60 + 2 * i }));
+
+  it("totalKey absent (an old row): the series that equals the sum of the rest is the total", () => {
+    expect(computeHeadline(src({}), rows)).toMatchObject({ value: 66, basis: "total-series" });
+  });
+
+  it("totalKey persisted as null (the engine already looked): the headline is not reinterpreted", () => {
+    expect(computeHeadline(src({ totalKey: null }), rows)).toMatchObject({ value: 132, basis: "sum-of-series" });
+  });
+
+  it("never for a mean, nor for a truncated series list", () => {
+    expect(computeHeadline(src({ aggregate: "mean" }), rows)).toBeNull();
+    expect(computeHeadline(src({ seriesOverflow: true }), rows)).toBeNull();
   });
 });
