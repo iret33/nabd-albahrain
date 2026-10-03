@@ -12,10 +12,12 @@
  *   - ISO year-month / date  "2026-03", "2026-03-15"
  *   - grouped numbers        "1,512,345", "1,512,345.67"
  *   - signed / decimal / %   "-49.5%", "+2.3%", "3.6 ٪"
- * A sentence-final "." after a number is NOT swallowed ("1500." -> "1500").
+ * A sentence-final "." after a number is NOT swallowed ("1500." -> "1500"),
+ * and digits glued to Latin letters belong to that word ("km2", "Q1"), not to
+ * a number of their own.
  */
 export const NUMERIC_TOKEN_SOURCE =
-  String.raw`\d{4}[-–]\d{4}(?!\d)|\d{4}-\d{2}(?:-\d{2})?(?!\d)|[+-]?\d+(?:,\d{3})*(?:\.\d+)?(?:\s?[%٪])?`;
+  String.raw`(?<![A-Za-z])(?:\d{4}[-–]\d{4}(?!\d)|\d{4}-\d{2}(?:-\d{2})?(?!\d)|[+-]?\d+(?:,\d{3})*(?:\.\d+)?(?:\s?[%٪])?)`;
 
 export interface TextRun {
   text: string;

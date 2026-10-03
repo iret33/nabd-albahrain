@@ -66,10 +66,10 @@ import {
 import {
   isMonthOnlyName,
   isQuarterOnlyName,
+  createTemporalParser,
   looksTemporalName,
   looksYearName,
   parseMonthPart,
-  parseTemporalValue,
   type TemporalParts,
 } from "@/lib/temporal";
 import {
@@ -527,7 +527,11 @@ function sampleForMedian(acc: Accum, n: number): void {
   if (j < MEDIAN_SAMPLE_CAP) acc.numSample[j] = n;
 }
 
-function buildAccumulators(fields: CatalogField[], records: Record<string, unknown>[]): Accum[] {
+function buildAccumulators(
+  fields: CatalogField[],
+  records: Record<string, unknown>[],
+  parseTemporal: (raw: unknown) => TemporalParts | null,
+): Accum[] {
   const seen = new Set<string>();
   const accumList: Accum[] = [];
   for (const f of fields) {
@@ -618,7 +622,7 @@ function buildAccumulators(fields: CatalogField[], records: Record<string, unkno
         acc.type === "datetime" ||
         ((acc.type === "text" || acc.type === "int") && acc.looksTemporalByName);
       if (trackTemporal) {
-        const parsed = parseTemporalValue(raw);
+        const parsed = parseTemporal(raw);
         if (acc.type !== "date" && acc.type !== "datetime") {
           acc.sampleAttempts++;
           if (parsed !== null) acc.sampleOk++;
@@ -845,6 +849,8 @@ interface TotalField {
 
 interface BuildContext {
   datasetId: string;
+  /** Memoizing temporal parser shared by every pass over this dataset's rows. */
+  parseTemporal: (raw: unknown) => TemporalParts | null;
   override: VizOverride | undefined;
   /** Text fields that carry a strict "Total" value next to non-total siblings. */
   totalFields: TotalField[];
@@ -1009,7 +1015,11 @@ function grainFor(temporalField: ClassifiedField): Grain {
   return temporalField.accum.temporalYearOnly && temporalField.accum.temporalParsed > 0 ? "year" : "month";
 }
 
-function temporalSourceFor(primary: ClassifiedField, monthParts: ClassifiedField[]): TemporalSource {
+function temporalSourceFor(
+  primary: ClassifiedField,
+  monthParts: ClassifiedField[],
+  parseTemporal: (raw: unknown) => TemporalParts | null,
+): TemporalSource {
   const grain = grainFor(primary);
   const monthField = grain === "year" ? monthParts[0] : undefined;
   if (monthField) {
@@ -1020,7 +1030,7 @@ function temporalSourceFor(primary: ClassifiedField, monthParts: ClassifiedField
       fieldNames: [primary.name, monthField.name],
       monthField,
       read(row) {
-        const y = parseTemporalValue(row[primary.name]);
+        const y = parseTemporal(row[primary.name]);
         if (!y) return null;
         if (y.month !== null) return y; // the year column already carries a month: trust it
         const month = parseMonthPart(row[monthField.name]);
@@ -1033,7 +1043,7 @@ function temporalSourceFor(primary: ClassifiedField, monthParts: ClassifiedField
     label: primary.label,
     grain,
     fieldNames: [primary.name],
-    read: (row) => parseTemporalValue(row[primary.name]),
+    read: (row) => parseTemporal(row[primary.name]),
   };
 }
 
@@ -1594,7 +1604,7 @@ function buildVizConfig(
   const { temporal, geo, monthParts } = classification;
   const geoFields = geoMeta(geo);
   const primaryTemporal = temporal[0];
-  const temporalSource = primaryTemporal ? temporalSourceFor(primaryTemporal, monthParts) : null;
+  const temporalSource = primaryTemporal ? temporalSourceFor(primaryTemporal, monthParts, ctx.parseTemporal) : null;
 
   // A "Month" column consumed by the period is not a dimension any more.
   const consumed = new Set<string>(temporalSource?.monthField ? [temporalSource.monthField.name] : []);
@@ -1739,13 +1749,15 @@ export async function computeDerivedFields(
       };
     }
 
-    const accumList = buildAccumulators(fields, records);
+    const parseTemporal = createTemporalParser();
+    const accumList = buildAccumulators(fields, records, parseTemporal);
     const statsJson = buildStatsJson(accumList);
     const classification = classifyFields(accumList);
 
     const override = options.override === undefined ? getVizOverride(datasetId) : (options.override ?? undefined);
     const ctx: BuildContext = {
       datasetId,
+      parseTemporal,
       override,
       totalFields: collectTotalFields(accumList, new Set(classification.temporal.map((t) => t.name))),
     };

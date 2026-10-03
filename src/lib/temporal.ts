@@ -61,8 +61,11 @@ function lookupMonthName(text: string): number | null {
 // ---------------------------------------------------------------------------
 
 const ARABIC_INDIC_DIGITS = /[٠-٩۰-۹]/g;
+const HAS_ARABIC_INDIC_DIGIT = /[٠-٩۰-۹]/;
 
 function toLatinDigits(s: string): string {
+  // Fast path: nearly every value is plain ASCII, and this runs once per row.
+  if (!HAS_ARABIC_INDIC_DIGIT.test(s)) return s;
   return s.replace(ARABIC_INDIC_DIGITS, (d) => {
     const code = d.charCodeAt(0);
     return String(code >= 0x06f0 ? code - 0x06f0 : code - 0x0660);
@@ -190,6 +193,26 @@ export function parseTemporalValue(raw: unknown): TemporalParts | null {
   }
 
   return null;
+}
+
+/**
+ * A per-call memoizing `parseTemporalValue`. A temporal column has few
+ * distinct values relative to its rows (8 years x 300,000 rows, or a few
+ * thousand dates), and the derivation engine parses the same column in
+ * several passes, so caching by raw value removes most of the parsing work.
+ * The cache is bounded (after `maxEntries` distinct values it stops growing)
+ * and lives as long as the returned function, i.e. one dataset's derivation.
+ */
+export function createTemporalParser(maxEntries = 20_000): (raw: unknown) => TemporalParts | null {
+  const cache = new Map<string | number, TemporalParts | null>();
+  return (raw) => {
+    if (typeof raw !== "string" && typeof raw !== "number") return null;
+    const hit = cache.get(raw); // a cached "unparseable" is null, a miss is undefined
+    if (hit !== undefined) return hit;
+    const parsed = parseTemporalValue(raw);
+    if (cache.size < maxEntries) cache.set(raw, parsed);
+    return parsed;
+  };
 }
 
 /**

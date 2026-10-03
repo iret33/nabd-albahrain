@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ARABIC_MONTH_NAMES,
+  createTemporalParser,
   isMonthOnlyName,
   isQuarterOnlyName,
   looksTemporalName,
@@ -116,6 +117,20 @@ describe("parseTemporalValue: explicit offsets are converted to Asia/Bahrain", (
   });
   it("a naive datetime is left alone", () => {
     expect(parseTemporalValue("2020-03-31T23:30:00")).toEqual(ym(2020, 3, 31));
+  });
+});
+
+describe("createTemporalParser (memoized)", () => {
+  it("returns exactly what parseTemporalValue returns, including cached nulls", () => {
+    const parse = createTemporalParser();
+    for (const input of ["2020", 2020, "2020-03-15", "Item 12", "", null, undefined, {}, "2020", 2020, "Item 12"]) {
+      expect(parse(input)).toEqual(parseTemporalValue(input));
+    }
+  });
+  it("is bounded: past maxEntries it still answers correctly without growing", () => {
+    const parse = createTemporalParser(3);
+    for (let y = 2000; y < 2010; y++) expect(parse(String(y))).toEqual({ year: y, month: null, day: null });
+    expect(parse("2000")).toEqual({ year: 2000, month: null, day: null });
   });
 });
 

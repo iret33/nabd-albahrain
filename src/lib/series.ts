@@ -53,6 +53,13 @@ const STRICT_TOTAL_RES: RegExp[] = [
   /^(?:ال)?(?:[إا]جمالي|مجموع)(?: (?:العام|الكلي|الإجمالي|الاجمالي))?$/,
 ];
 
+/**
+ * Cheap necessary condition for every strict pattern above. The derivation
+ * engine asks this for each row of high-cardinality text fields, so it must
+ * not pay for normalization on the 99.99% of values that are plainly not totals.
+ */
+const STRICT_TOTAL_HINT_RE = /total|overall|جمالي|مجموع/i;
+
 function normalizeTotalLabel(label: string): string {
   return label
     .normalize("NFKC")
@@ -64,6 +71,7 @@ function normalizeTotalLabel(label: string): string {
 /** Strict tier: the whole label is "Total" / "Grand total" / "الإجمالي" / "المجموع" (case, spacing and punctuation tolerant). */
 export function isStrictTotalLabel(label: string): boolean {
   if (typeof label !== "string" || label.length === 0 || label.length > 40) return false;
+  if (!STRICT_TOTAL_HINT_RE.test(label)) return false;
   const norm = normalizeTotalLabel(label);
   return STRICT_TOTAL_RES.some((re) => re.test(norm));
 }

@@ -32,6 +32,11 @@ describe("splitNumericRuns (ArabicTextWithNumbers tokenization)", () => {
     expect(splitNumericRuns("بقيمة 1500.").map((r) => r.text)).toEqual(["بقيمة ", "1500", "."]);
   });
 
+  it("digits glued to Latin letters stay with their word (unit 'km2', 'Q1')", () => {
+    expect(numeric("آخر قيمة مسجلة: 1,200 km2 في 2025")).toEqual(["1,200", "2025"]);
+    expect(numeric("الربع Q1 2025")).toEqual(["2025"]);
+  });
+
   it("month names around a year: only the year is numeric", () => {
     expect(numeric("في مارس 2026، بتغير +2.6% عن الفترة السابقة.")).toEqual(["2026", "+2.6%"]);
   });

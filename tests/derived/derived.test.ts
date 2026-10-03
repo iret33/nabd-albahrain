@@ -176,6 +176,28 @@ describe("Total rows on a hidden dimension are never summed with their parts", (
     expect(viz.excludedTotals).toEqual(["Total"]);
   });
 
+  it("bar-stacked: a 'Total' on a HIDDEN third dimension is dropped before summing", async () => {
+    const records: Rec[] = [];
+    for (const gov of ["Capital", "Northern", "Southern"]) {
+      for (const type of ["Public", "Private"]) {
+        records.push({ type, gov, nationality: "Bahraini", value: 10 });
+        records.push({ type, gov, nationality: "Non-Bahraini", value: 5 });
+        records.push({ type, gov, nationality: "Total", value: 15 });
+      }
+    }
+    const { viz, rows } = await derive(records, [
+      field("type", "text", "Type"),
+      field("gov", "text", "Governorate"),
+      field("nationality", "text", "Nationality"),
+      field("value", "int", "Value"),
+    ]);
+    if (viz.type !== "bar-stacked") throw new Error("expected bar-stacked");
+    // series = lowest-cardinality dim (type), x = governorate, nationality is summed over its PARTS only
+    expect(rows.find((r) => r.category === "Capital")).toMatchObject({ Public: 15, Private: 15 }); // was 30
+    expect(viz.excludedTotals).toEqual(["Total"]);
+    expect(viz.hiddenDimensions).toEqual(["Nationality"]);
+  });
+
   it("bar-h: a 'Total' category is not the top category", async () => {
     const records: Rec[] = [
       { sector: "Industry", value: 10 },
