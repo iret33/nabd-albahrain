@@ -39,8 +39,8 @@ export interface VizOverride {
 export const vizOverrides: Record<string, VizOverride> = {
   // The consumer price index dataset's measure is an index LEVEL. Summed over
   // every division/group and month it charted ~42,000 instead of a CPI of
-  // ~100-120 (documented in README "known limitation"); averaging gives the
-  // meaningful figure whatever the field happens to be labeled.
+  // ~100-120; averaging gives the meaningful figure whatever the field happens
+  // to be labeled.
   "01-consumer-price-index-division-and-group-index-number": { aggregate: "mean" },
 };
 

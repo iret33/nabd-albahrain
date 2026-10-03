@@ -1,7 +1,8 @@
 /**
  * POST /api/revalidate — drop Next.js data-cache entries by tag.
  *
- * Auth: bearer SYNC_TOKEN or the admin cookie (isSyncRequestAuthorized).
+ * Auth: bearer SYNC_TOKEN or the signed admin-session cookie
+ * (`authorizeSyncRequest`, `src/lib/sync/auth.ts`).
  * Body (all optional): `{ tags?: string[], datasetIds?: string[] }`.
  * `tags` defaults to `["datasets"]` (every list/aggregate query);
  * every `datasetIds` entry adds the tag `dataset:<id>` (that dataset's detail
