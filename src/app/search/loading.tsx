@@ -2,11 +2,12 @@ import { CardGridSkeleton } from "@/components/skeletons";
 
 export default function SearchLoading() {
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-12" aria-hidden="true">
       <div className="h-9 w-32 animate-pulse rounded bg-line-light/70" />
       <div className="mt-2 h-4 w-2/3 max-w-xl animate-pulse rounded bg-line-light/70" />
       <div className="mt-6 h-12 w-full max-w-xl animate-pulse rounded-full bg-line-light/70" />
-      <div className="mt-8">
+      <div className="mt-8 h-44 w-full animate-pulse rounded-2xl bg-line-light/70 sm:h-32" />
+      <div className="mt-6">
         <CardGridSkeleton />
       </div>
     </div>
