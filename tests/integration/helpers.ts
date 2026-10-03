@@ -84,6 +84,7 @@ export interface Harness {
   recompute: typeof import("@/lib/sync/recompute");
   scheduler: typeof import("@/lib/sync/scheduler");
   derived: typeof import("@/lib/sync/derived");
+  freshness: typeof import("@/lib/sync/freshness");
   /** Wipe the sync tables, restore the mock fixtures and the default env. */
   reset(): Promise<void>;
   /** A full baseline sync of the 10 mock datasets. */
@@ -118,6 +119,7 @@ export async function setupHarness(): Promise<Harness> {
     const recompute = await import("@/lib/sync/recompute");
     const scheduler = await import("@/lib/sync/scheduler");
     const derived = await import("@/lib/sync/derived");
+    const freshness = await import("@/lib/sync/freshness");
 
     const harness: Harness = {
       mock,
@@ -128,6 +130,7 @@ export async function setupHarness(): Promise<Harness> {
       recompute,
       scheduler,
       derived,
+      freshness,
       async reset() {
         process.env.ODS_BASE_URL = odsBase;
         // No real web server to notify unless a test opts in.
@@ -139,6 +142,8 @@ export async function setupHarness(): Promise<Harness> {
         );
         await prisma.$executeRawUnsafe('INSERT INTO "SyncLock" ("id", "running") VALUES (1, false)');
         await prisma.$executeRawUnsafe('INSERT INTO "SyncState" ("id") VALUES (1)');
+        // The tables were rewritten behind the freshness read model's back.
+        freshness.clearFreshnessMemo();
       },
       async seed() {
         const result = await engine.runSync({ trigger: "test-seed" });

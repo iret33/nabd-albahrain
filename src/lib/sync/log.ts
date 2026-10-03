@@ -156,12 +156,102 @@ export async function sweepOrphanedRuns(): Promise<number> {
   return count;
 }
 
-/** Patch the SyncState singleton (creating it if the migration's seed row is missing). */
-export async function updateSyncState(patch: {
+/**
+ * Retention for SyncLog. Every public press writes a row (the "running" row is
+ * load-bearing: progress, run id, orphan detection), so without a prune the
+ * table grows with visitor clicks and the rows an operator needs (scheduler
+ * failures) sink in the history.
+ *
+ *  - the newest `keepNewest` rows and the rows the freshness/health/admin
+ *    banners read ("latest finished run") are never touched, nor is any run
+ *    still in flight;
+ *  - a public press that did nothing (success, nothing updated or failed) only
+ *    lives `publicNoopDays`;
+ *  - anything else lives `defaultDays`; failures of non-public runs (the
+ *    scheduler, the CLI, the admin button) live `nonPublicFailureDays`.
+ */
+export const SYNC_LOG_RETENTION = {
+  keepNewest: 200,
+  publicNoopDays: 7,
+  defaultDays: 90,
+  nonPublicFailureDays: 365,
+  batchSize: 500,
+  maxBatches: 20,
+} as const;
+
+/**
+ * Delete expired SyncLog rows (see SYNC_LOG_RETENTION); resolves with how many
+ * went. The cutoff is computed by the database on its UTC clock (SyncLog
+ * timestamps are naive UTC), in batches so no statement holds a long lock.
+ */
+export async function pruneSyncLogs(): Promise<number> {
+  const r = SYNC_LOG_RETENTION;
+  let total = 0;
+  for (let batch = 0; batch < r.maxBatches; batch++) {
+    const deleted = await prisma.$executeRaw`
+      DELETE FROM "SyncLog" WHERE "id" IN (
+        SELECT l."id" FROM "SyncLog" l
+        WHERE l."status" <> 'running'
+          AND l."id" NOT IN (SELECT "id" FROM "SyncLog" ORDER BY "id" DESC LIMIT ${r.keepNewest}::int)
+          AND l."id" IS DISTINCT FROM (
+            SELECT max("id") FROM "SyncLog"
+            WHERE "status" <> 'running' AND ("scope" IS NULL OR "scope" <> 'recompute'))
+          AND l."id" IS DISTINCT FROM (
+            SELECT max("id") FROM "SyncLog"
+            WHERE "status" <> 'running'
+              AND ("scope" IS NULL OR ("scope" <> 'recompute' AND "scope" NOT LIKE 'dataset:%')))
+          AND (
+            (l."trigger" = 'public' AND l."status" = 'success' AND l."failed" = 0 AND l."updated" = 0
+              AND l."startedAt" < timezone('utc', now()) - make_interval(days => ${r.publicNoopDays}::int))
+            OR (l."startedAt" < timezone('utc', now()) - make_interval(days => ${r.defaultDays}::int)
+              AND NOT (l."trigger" <> 'public' AND l."status" IN ('failed', 'partial', 'aborted')))
+            OR l."startedAt" < timezone('utc', now()) - make_interval(days => ${r.nonPublicFailureDays}::int)
+          )
+        ORDER BY l."id"
+        LIMIT ${r.batchSize}::int
+      )`;
+    total += deleted;
+    if (deleted < r.batchSize) break;
+  }
+  if (total > 0) console.log(`[sync] Pruned ${total} expired SyncLog row(s).`);
+  return total;
+}
+
+const PRUNE_EVERY_MS = 60 * 60 * 1000;
+let lastPruneStartedAt = 0;
+
+/**
+ * `pruneSyncLogs` at most once an hour per process, never throwing: called
+ * after every run (so the CLI and external-cron deployments prune too, not
+ * only the in-process scheduler) and from the scheduler tick.
+ */
+export async function maybePruneSyncLogs(nowMs = Date.now()): Promise<void> {
+  if (nowMs - lastPruneStartedAt < PRUNE_EVERY_MS) return;
+  lastPruneStartedAt = nowMs;
+  try {
+    await pruneSyncLogs();
+  } catch (err) {
+    console.error("[sync] SyncLog retention prune failed:", err);
+  }
+}
+
+/** Test hook: forget the throttle so the next maybePruneSyncLogs() runs. */
+export function resetPruneThrottleForTests(): void {
+  lastPruneStartedAt = 0;
+}
+
+/** The SyncState columns a run may bump (schema.prisma says what each one means). */
+export interface SyncStatePatch {
+  /** Last complete catalog pass applied by ANY run: feeds "last checked" and the 60s collapse. */
   lastCatalogCheckAt?: Date;
   lastSuccessAt?: Date;
   lastDataChangeAt?: Date;
-}): Promise<void> {
+  /** The scheduler's own clock: written only by unrestricted catalog-wide runs. */
+  lastFullPassAt?: Date;
+}
+
+/** Patch the SyncState singleton (creating it if the migration's seed row is missing). */
+export async function updateSyncState(patch: SyncStatePatch): Promise<void> {
   if (Object.keys(patch).length === 0) return;
   await prisma.syncState.upsert({
     where: { id: 1 },

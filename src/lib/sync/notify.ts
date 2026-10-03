@@ -49,7 +49,14 @@ export async function notifyAppToRevalidate(
   const url = `${resolveAppBaseUrl()}/api/revalidate`;
   const body: { tags?: string[]; datasetIds?: string[] } = {};
   if (opts.tags && opts.tags.length > 0) body.tags = opts.tags;
-  const ids = [...new Set(opts.datasetIds ?? [])].slice(0, MAX_NOTIFY_IDS);
+  const unique = [...new Set(opts.datasetIds ?? [])];
+  const ids = unique.slice(0, MAX_NOTIFY_IDS);
+  if (unique.length > ids.length) {
+    console.warn(
+      `[notify] ${unique.length - ids.length} dataset id(s) beyond the ${MAX_NOTIFY_IDS} the app accepts were not ` +
+        `listed; those pages will refresh when their cache TTL expires.`,
+    );
+  }
   if (ids.length > 0) body.datasetIds = ids;
 
   const controller = new AbortController();

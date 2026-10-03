@@ -38,13 +38,51 @@ export function catalogRecordsCount(entry: CatalogDataset): number {
   return Math.min(INT4_MAX, Math.trunc(raw));
 }
 
+/** A `modified` before the Unix epoch is portal noise, not a publication date. */
+const MIN_MODIFIED_MS = 0;
+/** Clock skew allowance: a `modified` further ahead than this is a bad value, not "just now". */
+const MAX_MODIFIED_FUTURE_MS = 24 * 3_600_000;
+
+/**
+ * The catalog's `modified` as a Date, or null when it is unparseable or not
+ * credible (before 1970, or more than a day ahead of `nowMs`). The value feeds
+ * /updates, the Atom feed and the sitemap, where a single `9999-12-31` would
+ * pin its dataset to the top of every list.
+ *
+ * Ignored, NOT clamped to "now": `metadataChanged` compares this column on
+ * every run, so a clamped value would move each time and rewrite the row on
+ * every sync, while null is stable until the portal fixes the value. A year
+ * outside the range also never reaches Prisma (an extended-year string such as
+ * "+010000-01-01T00:00:00Z" parses to a valid Date that createMany rejects,
+ * which would abort the whole catalog phase).
+ */
+export function parseSourceModified(
+  raw: string | null | undefined,
+  nowMs: number = Date.now(),
+): { date: Date | null; ignored: boolean } {
+  if (!raw) return { date: null, ignored: false };
+  const date = new Date(raw);
+  const ms = date.getTime();
+  if (Number.isNaN(ms)) return { date: null, ignored: false };
+  if (ms < MIN_MODIFIED_MS || ms > nowMs + MAX_MODIFIED_FUTURE_MS) return { date: null, ignored: true };
+  return { date, ignored: false };
+}
+
+export interface MetadataOptions {
+  /** Clock for the future-date bound (tests). */
+  nowMs?: number;
+  /** Called with the raw value when a `modified` was ignored as not credible. */
+  onIgnoredModified?: (raw: string) => void;
+}
+
 /** Derive the Dataset metadata columns from one catalog entry. */
-export function metadataFromCatalogEntry(entry: CatalogDataset): DatasetMetadata {
+export function metadataFromCatalogEntry(entry: CatalogDataset, opts: MetadataOptions = {}): DatasetMetadata {
   const meta = entry.metas?.default;
   const title = meta?.title?.trim() || entry.dataset_id;
   const titleClean = computeTitleClean(title);
   const theme = meta?.theme && meta.theme.length > 0 ? meta.theme[0] : null;
-  const modified = meta?.modified ? new Date(meta.modified) : null;
+  const modified = parseSourceModified(meta?.modified, opts.nowMs);
+  if (modified.ignored && meta?.modified) opts.onIgnoredModified?.(meta.modified);
   const description = meta?.description ?? null;
   const publisher = meta?.publisher ?? null;
   const titleAr = textOrNull(meta?.title_ar);
@@ -58,7 +96,7 @@ export function metadataFromCatalogEntry(entry: CatalogDataset): DatasetMetadata
     publisher,
     recordsCount: catalogRecordsCount(entry),
     fieldsJson: entry.fields ?? null,
-    sourceModified: modified && !isNaN(modified.getTime()) ? modified : null,
+    sourceModified: modified.date,
     titleAr,
     keywords,
     license: textOrNull(meta?.license),

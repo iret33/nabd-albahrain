@@ -3,10 +3,18 @@
  *
  * Started from `src/instrumentation.ts` when the Node server boots. It wakes
  * at most every min(interval, 5) minutes and lets the DATABASE decide whether
- * a run is due (`SyncState.lastCatalogCheckAt` older than ~0.9 x the
- * interval), so restarts and multiple app instances are safe: a restart does
- * not reset the schedule, and two instances racing for the same slot are
- * serialized by the sync lock (the loser just logs and moves on).
+ * a run is due (`SyncState.lastFullPassAt` older than ~0.9 x the interval), so
+ * restarts and multiple app instances are safe: a restart does not reset the
+ * schedule, and two instances racing for the same slot are serialized by the
+ * sync lock (the loser just logs and moves on).
+ *
+ * The due-clock is `lastFullPassAt`, NOT `lastCatalogCheckAt`: only an
+ * unrestricted catalog-wide run (this scheduler, the admin button, the CLI)
+ * advances it. A visitor's public refresh also checks the catalog, but it
+ * defers the datasets over PUBLIC_REFRESH_MAX_RECORDS and beyond five per
+ * press, so if it counted, a visitor pressing every few hours would keep the
+ * scheduled pass (the only automatic path that downloads those) from ever
+ * running.
  *
  * The timers are `unref()`'d so they never keep the process alive, and a tick
  * can never throw into the server: every failure is logged and the next wake
@@ -24,16 +32,51 @@ import {
 } from "./config";
 import { runSync } from "./engine";
 import { SyncAlreadyRunningError } from "./lock";
-import { sweepOrphanedRuns } from "./log";
+import { maybePruneSyncLogs, sweepOrphanedRuns } from "./log";
 import { countDatasetsNeedingRecompute, runRecompute } from "./recompute";
 import { installShutdownHandlers } from "./runtime";
 
-/** A run is due once the last complete catalog pass is older than this fraction of the interval. */
+/** A run is due once the last unrestricted catalog pass is older than this fraction of the interval. */
 const DUE_FRACTION = 0.9;
 /** After a failed run, wait at least this long (minutes, capped by the interval) before retrying. */
 const FAILURE_BACKOFF_MINUTES = 15;
+/**
+ * A legacy dataset pulls a pass forward only when the last full pass is older
+ * than this (minutes, capped at a quarter of the interval): a row that no pass
+ * can repair must not turn every 5-minute wake into a full catalog fetch.
+ */
+const CATCH_UP_MIN_GAP_MINUTES = 15;
 
-export type TickAction = "first-sync" | "recompute" | "sync" | "not-due" | "busy" | "error";
+/** Minimum gap between two catch-up passes (see CATCH_UP_MIN_GAP_MINUTES). */
+function catchUpGapMs(intervalMinutes: number): number {
+  return Math.min(CATCH_UP_MIN_GAP_MINUTES, intervalMinutes * 0.25) * 60_000;
+}
+
+/**
+ * Is any live dataset still in the shape an OLD engine left it in: a dataset
+ * that was synced (ok/partial) without a version token, or whose search text
+ * was never built? Only a catalog pass repairs those (it re-downloads on the
+ * missing token and rewrites the metadata). Deliberately NOT part of this:
+ *  - rows in "error" or "pending": the normal pass retries those anyway, and a
+ *    row that keeps failing must not make every wake a full pass;
+ *  - a stale derivedVersion: the recompute step that runs first in the same
+ *    tick repairs every row it is eligible for without network, and what it
+ *    cannot repair (capped "partial" rows, empty datasets) a normal pass
+ *    would skip too.
+ */
+export async function hasLegacyDatasets(): Promise<boolean> {
+  const row = await prisma.dataset.findFirst({
+    where: {
+      removedAt: null,
+      syncStatus: { in: ["ok", "partial"] },
+      OR: [{ syncedVersion: null }, { searchText: "" }],
+    },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
+export type TickAction ="first-sync" | "recompute" | "sync" | "not-due" | "busy" | "error";
 
 export interface TickResult {
   actions: TickAction[];
@@ -45,16 +88,22 @@ export interface TickResult {
  * One scheduler decision. Exported for tests; `startScheduler` calls it from
  * its timer. Never throws.
  *
+ * 0. Housekeeping: SyncLog retention (at most hourly, never throws).
  * 1. Empty Dataset table -> a full first sync (a fresh deploy populates itself).
  * 2. Otherwise, datasets whose derived columns are stale (DERIVED_VERSION) are
  *    re-derived locally first (no network, minutes at most).
- * 3. Then a normal incremental sync if the catalog was last checked long enough ago.
+ * 3. Then a normal incremental sync if the last full pass is old enough, or at
+ *    once (CATCH-UP) when a live dataset still has the shape an old engine
+ *    left it in (see hasLegacyDatasets), which is how a database written
+ *    before the version tokens and search text existed repairs itself.
  */
 export async function runSchedulerTick(intervalMinutes: number, now = Date.now()): Promise<TickResult> {
   const actions: TickAction[] = [];
   let failed = false;
 
   try {
+    await maybePruneSyncLogs();
+
     const datasetCount = await prisma.dataset.count();
     if (datasetCount === 0) {
       console.log("[scheduler] No datasets yet; running the first full sync.");
@@ -71,9 +120,13 @@ export async function runSchedulerTick(intervalMinutes: number, now = Date.now()
       if (result.status === "failed") failed = true;
     }
 
-    const state = await prisma.syncState.findUnique({ where: { id: 1 }, select: { lastCatalogCheckAt: true } });
-    const last = state?.lastCatalogCheckAt?.getTime();
-    const due = last === undefined || now - last >= DUE_FRACTION * intervalMinutes * 60_000;
+    const state = await prisma.syncState.findUnique({ where: { id: 1 }, select: { lastFullPassAt: true } });
+    const last = state?.lastFullPassAt?.getTime();
+    let due = last === undefined || now - last >= DUE_FRACTION * intervalMinutes * 60_000;
+    if (!due && last !== undefined && now - last >= catchUpGapMs(intervalMinutes) && (await hasLegacyDatasets())) {
+      console.log("[scheduler] Legacy dataset rows found; catching up with a full pass now.");
+      due = true;
+    }
     if (!due) {
       if (actions.length === 0) actions.push("not-due");
       return { actions, failed };

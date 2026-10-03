@@ -63,6 +63,61 @@ export async function mapWithConcurrency<T, R>(
   return results;
 }
 
+export interface Gate {
+  /**
+   * Run `fn` once fewer than `limit` calls are inside the gate. The slot is
+   * released in a `finally`. When `signal` aborts while the caller is still
+   * WAITING for a slot, the wait is dropped and the promise rejects with the
+   * signal's reason (fn never starts); a call already running is not touched.
+   */
+  run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+}
+
+/** A counting semaphore (FIFO) that holds at most `limit` async operations at once. */
+export function createGate(limit: number): Gate {
+  const max = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  let active = 0;
+  const waiters: Array<() => void> = [];
+
+  const release = () => {
+    const next = waiters.shift();
+    if (next) next(); // hand the slot straight to the next waiter (active stays the same)
+    else active--;
+  };
+
+  const acquire = (signal?: AbortSignal): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+    if (active < max) {
+      active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const at = waiters.indexOf(grant);
+        if (at >= 0) waiters.splice(at, 1);
+        reject(signal?.reason ?? new Error("aborted"));
+      };
+      waiters.push(grant);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+
+  return {
+    async run(fn, signal) {
+      await acquire(signal);
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
 /**
  * JSON.stringify with object keys sorted at every level, so two values that
  * differ only in key order (e.g. a portal payload vs. what Postgres `jsonb`
