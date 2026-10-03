@@ -260,4 +260,9 @@ describe("completenessPercent", () => {
     expect(completenessPercent(-1)).toBe(100);
     expect(completenessPercent(7)).toBe(0);
   });
+  it("is null when the rate is unknown (a damaged or older stats row)", () => {
+    expect(completenessPercent(undefined)).toBeNull();
+    expect(completenessPercent(null)).toBeNull();
+    expect(completenessPercent(Number.NaN)).toBeNull();
+  });
 });

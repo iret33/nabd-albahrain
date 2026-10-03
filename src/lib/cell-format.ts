@@ -70,8 +70,9 @@ export function buildColumns(fields: readonly CatalogField[], stats: StatsJson |
   return columns;
 }
 
-/** Percent complete, never rounded up to 100 while a value is missing. */
-export function completenessPercent(nullRate: number): number {
+/** Percent complete, never rounded up to 100 while a value is missing; null when the rate is unknown. */
+export function completenessPercent(nullRate: number | null | undefined): number | null {
+  if (typeof nullRate !== "number" || !Number.isFinite(nullRate)) return null;
   const raw = (1 - Math.min(1, Math.max(0, nullRate))) * 100;
   if (raw >= 100) return 100;
   if (raw > 99.9) return 99.9;
