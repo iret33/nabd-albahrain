@@ -27,6 +27,41 @@
 #                            Use hex (`openssl rand -hex 16`): it goes into a URL.
 #   NEXT_PUBLIC_SITE_URL     public origin; baked into the build (canonical
 #                            links, sitemap) AND passed at runtime.
+#   DB_POOL_SIZE             Prisma connection-pool size for the app (default 12).
+#                            At least SYNC_CONCURRENCY + 6 (the app warns at
+#                            start when it is smaller): every dataset being
+#                            synced holds one connection for its whole write
+#                            transaction, and the lock heartbeat, progress
+#                            writer, /api/freshness (3 parallel queries) and
+#                            page queries need the rest. Prisma's own default is
+#                            2*vCPUs+1, i.e. 3 on a 1-vCPU VPS, which a heavy
+#                            sync can exhaust (P2024 "Timed out fetching a new
+#                            connection", HTTP 500s). A one-off
+#                            `docker compose run --rm app sync` opens its own
+#                            pool of the same size; Postgres allows 100.
+#   APP_MEM_LIMIT            optional memory cap for the app container, e.g.
+#                            `1536m`. Unset = no cap. Size it from the Node heap
+#                            cap plus 300-400 MB for the Prisma engine, response
+#                            buffers and the Next baseline (see APP_NODE_OPTIONS
+#                            below). Too small a cap turns a big sync
+#                            into an OOM kill that strands the sync lock for the
+#                            10-minute stale window, so do not go below ~1.2 GB
+#                            while SYNC_CONCURRENCY >= 3.
+#   APP_NODE_OPTIONS         optional Node flags for the app container, e.g.
+#                            `--max-old-space-size=1024` (V8 old-space cap in MB;
+#                            three 300k-row datasets in flight were measured at
+#                            a ~0.6-0.8 GB process peak (RSS, Next baseline
+#                            included), so ~1024 leaves headroom). Set it
+#                            together with APP_MEM_LIMIT: a heap cap alone turns
+#                            memory pressure into an abrupt "heap out of memory"
+#                            crash instead of slower GC.
+#   GIT_SHA                  build arg, NOT a runtime variable: the revision the
+#                            image was built from, reported as `version` by
+#                            /api/health/ready. `.git` is not in the build
+#                            context, so pass it on the command line:
+#                              GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build
+#                            Do not keep it in `.env` (a stale value there would
+#                            silently report the wrong build).
 services:
   app:
     build:
@@ -35,15 +70,21 @@ services:
       args:
         # NEXT_PUBLIC_* is inlined at build time, so it must be a build arg.
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://data.hekkapp.com}
+        # Empty when not provided; the image then reports version: null.
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
+    # Opt-in memory cap (see APP_MEM_LIMIT above); 0 = unlimited.
+    mem_limit: ${APP_MEM_LIMIT:-0}
     # Time for an in-flight sync to abort cleanly and release its lock on stop.
     stop_grace_period: 30s
     env_file:
       - .env
     environment:
       # The in-compose database, derived from the single POSTGRES_PASSWORD knob
-      # (overrides any DATABASE_URL in .env, which is for non-Docker use).
-      - DATABASE_URL=postgresql://nabd:${POSTGRES_PASSWORD:-nabd}@db:5432/nabd
+      # (overrides any DATABASE_URL in .env, which is for non-Docker use) with an
+      # explicit pool size (see DB_POOL_SIZE above; leave pool_timeout alone:
+      # a longer wait only delays the P2024 and piles up health polls).
+      - DATABASE_URL=postgresql://nabd:${POSTGRES_PASSWORD:-nabd}@db:5432/nabd?connection_limit=${DB_POOL_SIZE:-12}
       - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://data.hekkapp.com}
       # Tunables the app reads at runtime. Listed bare so they are passed through
       # from .env / the shell when set, and left UNSET (app defaults apply) when
@@ -56,6 +97,11 @@ services:
       - PUBLIC_REFRESH_DATASET_COOLDOWN_SECONDS
       - PUBLIC_REFRESH_MAX_RECORDS
       - SYNC_CONCURRENCY
+      # Node flags for the server, e.g. --max-old-space-size=1024 (see
+      # .env.example). Deliberately a namespaced knob: a bare NODE_OPTIONS would
+      # also inherit whatever the HOST shell has set (developers often have a
+      # large heap there). Empty = Node's own default.
+      - NODE_OPTIONS=${APP_NODE_OPTIONS:-}
       # Where the sync engine POSTs "drop your caches" after a run. Inside the
       # compose network the web service is reachable as `app`; this also makes
       # one-off `docker compose run --rm app sync ...` containers (which have no

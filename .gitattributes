@@ -1,0 +1,47 @@
+# Line endings. The repository stores LF everywhere (the index is already
+# all-LF); this makes every checkout match it, so a Windows clone with
+# core.autocrlf=true cannot turn files that Linux tooling reads byte-for-byte
+# into broken ones:
+#   - docker/entrypoint.sh would start with `#!/bin/sh\r` and the container
+#     would die with "exec ./entrypoint.sh: no such file or directory";
+#   - Prisma checks a migration's checksum against the file's raw bytes, so a
+#     CRLF migration.sql no longer matches the one already applied;
+#   - a CRLF `.env` copied from .env.example leaves a `\r` on every value.
+# Already-CRLF working trees are not fixed by this file alone: re-checkout, or
+# run `git add --renormalize .` once.
+* text=auto
+
+# Executed / parsed by Linux tooling: LF in every working tree, always.
+*.sh text eol=lf
+docker/entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+.env.example text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+*.prisma text eol=lf
+
+# Source, config and docs: LF too, so diffs and linters see one convention.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+
+# Binary: never touched by text conversion (public/ images and fonts).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { weakSecretReason } from "@/lib/env";
@@ -84,6 +84,39 @@ describe.skipIf(SKIP)("entrypoint.sh: modes", () => {
     const r = run([], { NODE_ENV: "development", ADMIN_TOKEN: "dev", SYNC_TOKEN: "dev" });
     expect(r.code).toBe(0);
     expect(r.out).toContain("NODE server.js");
+  });
+});
+
+// entrypoint-crlf-no-gitattributes: the Dockerfile's ENTRYPOINT is `["./entrypoint.sh"]`, i.e. the kernel
+// reads the shebang. A CRLF checkout makes the interpreter `/bin/sh\r`, which does not exist.
+describe.skipIf(SKIP)("entrypoint.sh: exec'd through its shebang, as the image does", () => {
+  it("runs directly (executable bit + `#!/bin/sh` + LF)", () => {
+    const r = spawnSync(ENTRYPOINT, ["echo", "direct-exec-ok"], {
+      cwd: work,
+      env: { PATH: "/usr/bin:/bin", NODE_ENV: "production" },
+      encoding: "utf8",
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe("direct-exec-ok");
+  });
+
+  it("a CRLF copy cannot start at all (the failure .gitattributes prevents)", () => {
+    const crlf = path.join(work, "entrypoint-crlf.sh");
+    writeFileSync(crlf, readFileSync(ENTRYPOINT, "utf8").replace(/\n/g, "\r\n"));
+    chmodSync(crlf, 0o755);
+    const r = spawnSync(crlf, ["echo", "never"], {
+      cwd: work,
+      env: { PATH: "/usr/bin:/bin", NODE_ENV: "production" },
+      encoding: "utf8",
+    });
+    // The kernel looks for the interpreter "/bin/sh\r": ENOENT, nothing runs.
+    expect((r.error as NodeJS.ErrnoException | undefined)?.code).toBe("ENOENT");
+    expect(r.stdout ?? "").not.toContain("never");
+  });
+
+  it("is LF-only in the repository", () => {
+    expect(readFileSync(ENTRYPOINT, "utf8")).not.toContain("\r");
   });
 });
 

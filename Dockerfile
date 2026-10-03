@@ -30,10 +30,21 @@
 # instead by making the whole application tree read-only for the runtime user
 # (only `.next/cache` is writable), so code execution inside the server cannot
 # rewrite the application or its dependencies.
+#
+# Known, accepted exposure: the overlay also carries sharp + libvips (Next's
+# optional image-optimizer dependency; `pnpm audit --prod` lists high advisories
+# for them) and deepmerge-ts (under prisma's config loader). Neither is
+# reachable: next.config.ts sets images.unoptimized, so /_next/image answers 404
+# before sharp is ever required, and there is no prisma.config.ts for
+# deepmerge-ts to merge. The CI audit step keeps critical advisories blocking
+# and prints the highs as a warning (see .github/workflows/ci.yml). The sharp
+# part is cleared by refreshing the lockfile to sharp >= 0.35.4 (inside Next's
+# own declared range): `pnpm update sharp --depth Infinity`.
 
 FROM node:22-alpine AS base
 # openssl: required by Prisma's query engine on Alpine/musl.
-# libc6-compat: some native deps (sharp-style prebuilt binaries) expect it.
+# libc6-compat: glibc shim for prebuilt native binaries that some dependencies
+# ship (Next's optional ones included).
 RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app
 # Pin pnpm to the exact version in package.json's "packageManager" field (the
@@ -110,6 +121,17 @@ ENV HOSTNAME=0.0.0.0
 # releases the sync lock immediately, instead of leaving "running" state behind
 # for the 10-minute stale window. Without a running sync it exits at once.
 ENV NEXT_MANUAL_SIG_HANDLE=true
+
+# Which build is this? /api/health/ready reports it as `version`. Declared this
+# late on purpose: a per-commit value earlier would invalidate every layer after
+# it (node_modules overlay included) on every commit, and the builder/deps
+# stages never read it. `.git` is not in the build context, so the value has to
+# come from outside: `GIT_SHA=$(git rev-parse --short HEAD) docker compose up
+# -d --build` (compose passes it as a build arg) or CI's `github.sha`. Unset
+# stays empty and the endpoint reports `version: null`.
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
+LABEL org.opencontainers.image.revision="$GIT_SHA"
 
 # Liveness only (/api/health deliberately does not touch Postgres). Gives plain
 # `docker run` the same signal docker-compose.yml's healthcheck gives compose.

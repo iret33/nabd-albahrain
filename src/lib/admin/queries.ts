@@ -43,6 +43,20 @@ const SYNC_LOG_SELECT = {
   scope: true,
 } as const;
 
+/**
+ * A visitor pressed the public refresh button and nothing came of it: the run
+ * finished cleanly and changed no dataset. Every press writes a permanent
+ * SyncLog row (the row is load-bearing for progress and orphan detection), so
+ * left in the admin history these rows push the scheduler/CLI/admin runs an
+ * operator actually needs off the first page within an hour, and a successful
+ * press masks a failed scheduled run in the "last run" banner. Presses that
+ * failed, ended partial, were aborted, are still running, or updated data are
+ * NOT quiet and stay visible.
+ */
+export const QUIET_PUBLIC_PRESS = { trigger: "public", status: "success", failed: 0, updated: 0 } as const;
+
+const EXCLUDE_QUIET_PUBLIC_PRESSES = { NOT: QUIET_PUBLIC_PRESS } as const;
+
 export interface AdminStats {
   /** Datasets currently on the portal (removed ones are counted separately). */
   total: number;
@@ -52,6 +66,12 @@ export interface AdminStats {
   pending: number;
   /** Datasets a complete catalog pass no longer lists (`Dataset.removedAt` set). */
   removed: number;
+  /**
+   * The newest run that is not a no-op public press (see QUIET_PUBLIC_PRESS):
+   * a visitor's harmless click must not replace a failed scheduled run in the
+   * dashboard banner. It is also the only row the dashboard treats as "the
+   * latest run" when deciding whether a `running` row is live.
+   */
   lastSync: AdminSyncLogRow | null;
 }
 
@@ -64,7 +84,11 @@ export async function getAdminStats(): Promise<AdminStats> {
     prisma.dataset.count({ where: { ...active, syncStatus: "error" } }),
     prisma.dataset.count({ where: { ...active, syncStatus: "pending" } }),
     prisma.dataset.count({ where: { removedAt: { not: null } } }),
-    prisma.syncLog.findFirst({ orderBy: { startedAt: "desc" }, select: SYNC_LOG_SELECT }),
+    prisma.syncLog.findFirst({
+      where: EXCLUDE_QUIET_PUBLIC_PRESSES,
+      orderBy: { startedAt: "desc" },
+      select: SYNC_LOG_SELECT,
+    }),
   ]);
   return { total, ok, partial, error, pending, removed, lastSync };
 }
@@ -118,10 +142,24 @@ export async function getAllDatasetsForAdmin(): Promise<AdminDatasetRow[]> {
   });
 }
 
-export async function getRecentSyncLogs(limit = 20): Promise<AdminSyncLogRow[]> {
+/**
+ * Newest runs first. No-op public presses (QUIET_PUBLIC_PRESS) are left out
+ * unless `includeQuietPublic` (the dashboard's "show all runs" toggle), so the
+ * `limit` is spent on runs worth reading.
+ */
+export async function getRecentSyncLogs(
+  limit = 20,
+  opts: { includeQuietPublic?: boolean } = {},
+): Promise<AdminSyncLogRow[]> {
   return prisma.syncLog.findMany({
+    where: opts.includeQuietPublic ? undefined : EXCLUDE_QUIET_PUBLIC_PRESSES,
     orderBy: { startedAt: "desc" },
     take: limit,
     select: SYNC_LOG_SELECT,
   });
+}
+
+/** How many no-op public presses the default history view is hiding (for the toggle's label). */
+export async function countQuietPublicPresses(): Promise<number> {
+  return prisma.syncLog.count({ where: QUIET_PUBLIC_PRESS });
 }
