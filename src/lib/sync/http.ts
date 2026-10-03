@@ -115,6 +115,9 @@ export function parseRetryAfterMs(
   if (/^\d{1,7}$/.test(trimmed)) {
     ms = Number.parseInt(trimmed, 10) * 1000;
   } else {
+    // An HTTP-date always contains letters ("Sat, 03 Oct 2026 ..."); this
+    // keeps "-5" and other junk from being read as a date.
+    if (!/[A-Za-z]/.test(trimmed)) return null;
     const at = Date.parse(trimmed);
     if (Number.isNaN(at)) return null;
     ms = at - now;

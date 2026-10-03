@@ -22,7 +22,6 @@
  *   session time zone on a database that is not set to UTC.
  */
 
-import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { SyncAbortedError } from "./errors";
 
@@ -89,7 +88,7 @@ async function readLockRow(staleMs: number): Promise<LockRow | null> {
 export async function acquireLock(opts: AcquireOptions = {}): Promise<SyncLockHandle> {
   const staleMs = opts.staleMs ?? LOCK_STALE_MS;
   const heartbeatMs = opts.heartbeatMs ?? LOCK_HEARTBEAT_MS;
-  const holder = randomUUID();
+  const holder = crypto.randomUUID();
 
   // Read-only peek, only so a takeover of a dead run's lock is logged. The
   // authoritative decision is the single statement below.

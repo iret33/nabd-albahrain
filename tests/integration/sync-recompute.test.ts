@@ -15,6 +15,8 @@ describe.skipIf(!RUN_INTEGRATION)("recompute (integration: no network)", () => {
     await h.seed();
   });
 
+  const recordCount = (id: string) => h.prisma.datasetRecord.count({ where: { datasetId: id } });
+
   /** Make derived columns look like they were produced by an older DERIVED_VERSION. */
   const makeStale = (ids: string[]) =>
     h.prisma.dataset.updateMany({
@@ -88,7 +90,15 @@ describe.skipIf(!RUN_INTEGRATION)("recompute (integration: no network)", () => {
     expect(r.status).toBe("failed");
     expect(r.failed).toBe(1);
     expect(r.failures[0].error).toMatch(/do not match sourceCount/);
-    expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } })).summaryAr).toBe("قديم");
+    const flagged = await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } });
+    expect(flagged.summaryAr).toBe("قديم");
+    // flagged so it leaves the recompute queue and the next sync re-downloads it
+    expect(flagged.syncStatus).toBe("error");
+    expect(await h.recompute.countDatasetsNeedingRecompute()).toBe(0);
+    const repair = await h.engine.runSync({ trigger: "test" });
+    expect(repair.changed.updated).toEqual(["seaports"]);
+    expect(await recordCount("seaports")).toBe(12);
+    expect((await h.prisma.dataset.findUniqueOrThrow({ where: { id: "seaports" } })).syncStatus).toBe("ok");
   });
 
   it("--force recomputes datasets that are already current; --dataset narrows it", async () => {

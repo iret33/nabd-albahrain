@@ -115,9 +115,14 @@ function jitter(ms: number, fraction: number): number {
 export function startScheduler(): SchedulerHandle | null {
   if (g.__nabdScheduler) return g.__nabdScheduler;
 
-  // Best-effort release of the lock on SIGTERM. (Next's own handler exits the
-  // process; the heartbeat + 10-minute stale window is the real guarantee.)
-  installShutdownHandlers({ exit: false });
+  // Release the lock and mark the run "aborted" on SIGTERM/SIGINT. By default
+  // Next installs its own handler that calls process.exit(0) without waiting
+  // for us, so this is best-effort and the heartbeat + 10-minute stale window
+  // is the real guarantee. With NEXT_MANUAL_SIG_HANDLE set, Next installs no
+  // handler: we own the shutdown, wait (bounded) for the run to finalize its
+  // log and release the lock, then exit — a redeploy mid-sync then clears the
+  // "running" state immediately.
+  installShutdownHandlers({ exit: Boolean(process.env.NEXT_MANUAL_SIG_HANDLE) });
 
   // A previous process may have died mid-run, leaving a SyncLog row "running".
   sweepOrphanedRuns().catch((err) => console.error("[scheduler] Boot sweep failed:", err));

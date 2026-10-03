@@ -154,6 +154,15 @@ async function executeRecompute(ctx: RunContext, opts: RunRecomputeOptions): Pro
         const message = describeError(err).message;
         counters.failed++;
         failures.push({ datasetId: target.id, error: message });
+        if (err instanceof SyncIntegrityError) {
+          // The stored copy is inconsistent. Leave "ok" so it stops being
+          // eligible for recompute (the scheduler would otherwise retry it
+          // every few minutes forever); the next sync retries "error"
+          // datasets by re-downloading them, which repairs it.
+          await prisma.dataset
+            .update({ where: { id: target.id }, data: { syncStatus: "error", syncError: message } })
+            .catch((updateErr) => console.error(`[recompute] Could not flag ${target.id}:`, updateErr));
+        }
       }
       counters.processed++;
       progress.tick();

@@ -703,7 +703,14 @@ async function runDryRun(opts: RunSyncOptions): Promise<RunSyncResult> {
  * the result — including `status: "failed"` for whole-run failures.
  */
 export async function runSync(opts: RunSyncOptions): Promise<RunSyncResult> {
-  if (opts.dryRun) return runDryRun(opts);
+  if (opts.dryRun) {
+    try {
+      return await runDryRun(opts);
+    } finally {
+      // A dry run takes no lock; a handed-over one must not leak.
+      await opts.lock?.release();
+    }
+  }
   const ctx = await beginRun({
     trigger: opts.trigger,
     scope: describeScope(opts),
