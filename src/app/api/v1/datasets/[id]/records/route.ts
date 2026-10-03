@@ -51,7 +51,29 @@ export function OPTIONS() {
   return preflight();
 }
 
-export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+/** The headers of a CSV export. `X-Dataset-Partial` describes the DATASET (stored rows only), not the export. */
+function csvHeaders(id: string, partial: boolean): Record<string, string> {
+  return {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": csvContentDisposition(id),
+    "Cache-Control": CACHE_PUBLIC,
+    "X-Dataset-Partial": String(partial),
+    ...corsHeaders(),
+  };
+}
+
+type Ctx = { params: Promise<{ id: string }> };
+
+export const GET = (req: Request, ctx: Ctx) => handle(req, ctx, false);
+
+/**
+ * HEAD answers with the headers GET would send and no body. It must NOT open the CSV stream: nobody
+ * reads (or cancels) a HEAD response body, so the stream would hold an export slot until its idle timer
+ * fired, and a loop of HEADs would keep every slot taken.
+ */
+export const HEAD = (req: Request, ctx: Ctx) => handle(req, ctx, true);
+
+async function handle(req: Request, ctx: Ctx, head: boolean): Promise<Response> {
   const url = new URL(req.url);
   const csv = wantsCsv(url.searchParams);
   const limited = guardApi(req, csv ? "csv" : "read");
@@ -69,6 +91,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     restart = query.format === "csv" ? `${base}?format=csv` : `${base}?limit=${query.limit}`;
 
     if (query.format === "csv") {
+      if (head) {
+        const known = await getRecordsMeta(id);
+        if (!known) return notFound("Dataset");
+        return new Response(null, { status: 200, headers: csvHeaders(id, known.syncStatus === "partial") });
+      }
       const slot = acquireCsvSlot(req); // before reading anything: a refused export costs nothing
       if (slot instanceof Response) return slot;
       release = slot.release;
@@ -89,16 +116,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
             err instanceof StaleCursorError ? "the dataset was replaced mid-export" : err,
           ),
       });
-      const response = new Response(body, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": csvContentDisposition(id),
-          "Cache-Control": CACHE_PUBLIC,
-          "X-Dataset-Partial": String(meta.syncStatus === "partial"),
-          ...corsHeaders(),
-        },
-      });
+      const response = new Response(body, { status: 200, headers: csvHeaders(id, meta.syncStatus === "partial") });
       release = null; // handed over: the stream frees the slot when it ends, fails or is cancelled
       return response;
     }
@@ -107,7 +125,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     if (!meta) return notFound("Dataset");
     const page = await getDatasetRecordsAfter({ datasetId: id, after: query.after, limit: query.limit });
     if (!page) return notFound("Dataset");
-    return jsonOk({
+    const ok = jsonOk({
       id,
       partial: meta.syncStatus === "partial",
       /** Rows this mirror stores and serves; `recordsCount` is the portal's own (larger for partial datasets). */
@@ -120,6 +138,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       next: page.nextAfter ? `${base}?after=${encodeURIComponent(page.nextAfter)}&limit=${query.limit}` : null,
       records: page.rows,
     });
+    return head ? new Response(null, { status: ok.status, headers: ok.headers }) : ok;
   } catch (err) {
     if (err instanceof ApiParamError) return badRequest(err);
     if (err instanceof StaleCursorError) return cursorExpired(restart);

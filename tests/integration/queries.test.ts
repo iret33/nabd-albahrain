@@ -1259,6 +1259,33 @@ describe.skipIf(!RUN)("queries (integration)", () => {
         await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(0));
       });
 
+      it("HEAD answers with the headers and no body, and never holds an export slot (nobody reads a HEAD body)", async () => {
+        await seedRecords(`${F2}head`, 5);
+        const ip = freshIp();
+        const head = (id: string, query = "?format=csv") =>
+          route.HEAD(new Request(`http://x.test/api/v1/datasets/${id}/records${query}`, { method: "HEAD", headers: { "cf-connecting-ip": ip } }), {
+            params: Promise.resolve({ id }),
+          });
+        for (let i = 0; i < 5; i++) {
+          const res = await head(`${F2}head`);
+          expect(res.status).toBe(200);
+          expect(res.headers.get("content-type")).toContain("text/csv");
+          expect(res.headers.get("content-disposition")).toContain("attachment");
+          expect(res.headers.get("x-dataset-partial")).toBe("false");
+          expect(res.body).toBeNull();
+        }
+        expect(limits.csvStreamsInFlight()).toBe(0); // the old behaviour: each HEAD held a slot until its idle timer fired
+        const json = await head(`${F2}head`, "?limit=2");
+        expect(json.status).toBe(200);
+        expect(json.headers.get("content-type")).toContain("application/json");
+        expect(json.body).toBeNull();
+        expect((await head(`${F2}nope`)).status).toBe(404);
+        // ... and a real export right afterwards is not refused.
+        const get = await call(`${F2}head`, "?format=csv", ip);
+        expect(get.status).toBe(200);
+        await get.body?.cancel();
+      });
+
       it("every JSON route is rate limited per client too, with a 429 that carries Retry-After", async () => {
         const ip = freshIp();
         const { API_READ_BUDGET } = limits;
@@ -1320,7 +1347,8 @@ describe.skipIf(!RUN)("queries (integration)", () => {
     });
 
     describe("publishers (R2-07)", () => {
-      const ARABIC = ["وزارة الداخلية", "هيئة المعلومات والحكومة الإلكترونية"];
+      // Distinct from any hand-made fixture a developer may have in the database: the test counts exactly these.
+      const ARABIC = ["وزارة الداخلية للاختبار", "هيئة المعلومات والحكومة الإلكترونية للاختبار"];
       const LONG = `Ministry of ${"Something Very Long ".repeat(16)}`; // > 300 characters
 
       it("Arabic-only and over-long publisher names get distinct, valid, reachable slugs", async () => {
