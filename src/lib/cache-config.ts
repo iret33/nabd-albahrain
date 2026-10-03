@@ -4,6 +4,8 @@
  * sync engine's notify step without dragging Prisma or `next/cache` in.
  */
 
+import { MAX_PUBLISHER_SLUG_LENGTH } from "@/lib/slugify";
+
 /** Tag shared by every list/aggregate query. Revalidated after any sync that changed something. */
 export const DATASETS_TAG = "datasets";
 
@@ -65,7 +67,19 @@ export function isValidDatasetId(id: unknown): id is string {
   );
 }
 
-/** Publisher slugs are `slugify()` output: lowercase ASCII letters, digits and hyphens. */
+/**
+ * Longest theme name anywhere: what the sync stores (the catalog schema caps each theme at 200
+ * characters), what `findTheme` looks up, what a listing's `?theme=` keeps and what the API accepts.
+ * ONE number for all four, because a limit that differs between the writer and a reader gives a
+ * theme that has a tile and a count but an empty page (the reader cut it short and no longer found it).
+ */
+export const MAX_THEME_LENGTH = 200;
+
+/**
+ * Publisher slugs are `slugify()` output: lowercase ASCII letters, digits and hyphens, never empty
+ * (a name with no Latin letters gets a stable `p-<hash>` slug) and never over the cap (a longer
+ * name is cut and gets a hash suffix), so every name `slugify` accepts passes this check.
+ */
 export function isValidPublisherSlug(slug: unknown): slug is string {
-  return typeof slug === "string" && slug.length > 0 && slug.length <= 200 && /^[a-z0-9-]+$/.test(slug);
+  return typeof slug === "string" && slug.length > 0 && slug.length <= MAX_PUBLISHER_SLUG_LENGTH && /^[a-z0-9-]+$/.test(slug);
 }

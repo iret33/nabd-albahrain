@@ -18,8 +18,10 @@
  *   page       1-based, plain digits only
  */
 
+import { MAX_THEME_LENGTH } from "@/lib/cache-config";
 import { first, parsePage, parseQuery } from "@/lib/params";
 import { tokenize } from "@/lib/search";
+import { MAX_PUBLISHER_SLUG_LENGTH } from "@/lib/slugify";
 
 export const LIST_SORTS = ["relevance", "updated", "title", "records"] as const;
 export type ListSort = (typeof LIST_SORTS)[number];
@@ -28,8 +30,8 @@ export const LIST_SINCE = ["30d", "1y"] as const;
 export type ListSince = (typeof LIST_SINCE)[number];
 
 export const MAX_QUERY_LENGTH = 100;
-const MAX_THEME_LENGTH = 100;
-const MAX_PUBLISHER_SLUG_LENGTH = 200;
+// Theme and publisher-slug caps live in cache-config / slugify so the writer (sync), the lookups and this
+// parser share ONE limit each; a theme this parser cut short would no longer be found by an exact lookup.
 
 /** Fully normalized listing parameters. Always produced by `buildListParams`. */
 export interface ListParams {

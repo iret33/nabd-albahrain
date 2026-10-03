@@ -1013,4 +1013,418 @@ describe.skipIf(!RUN)("queries (integration)", () => {
       expect(cache.sets).toBe(sets);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Stage-3 fixes (findings r1-07, r1-14, R2-02, R2-03, R2-05, R2-06, R2-07, R2-11, R2-13)
+  describe("stage-3 data fixes", () => {
+    const F2 = "qtest-f2-";
+    const cleanupF2 = () => prisma.dataset.deleteMany({ where: { id: { startsWith: F2 } } });
+    beforeEach(async () => {
+      await cleanupF2();
+    });
+    afterAll(async () => {
+      await cleanupF2();
+    });
+
+    const rows = (count: number, tag = "a") => Array.from({ length: count }, (_, i) => ({ n: i + 1, v: `${tag}${i + 1}` }));
+    async function seedRecords(id: string, count: number, extra: Partial<Fixture> = {}) {
+      await prisma.dataset.create({
+        data: fixtureRow({
+          id,
+          titleClean: id,
+          theme: "QTF2",
+          recordsCount: count,
+          sourceCount: count,
+          fieldsJson: [
+            { name: "n", label: "N", type: "int" },
+            { name: "v", label: "V", type: "text" },
+          ],
+          ...extra,
+        }),
+      });
+      await prisma.datasetRecord.createMany({ data: rows(count).map((data) => ({ datasetId: id, data })) });
+    }
+    /** What the sync engine does to a changed dataset: all rows deleted, all rows inserted (new BIGSERIAL ids), one transaction. */
+    async function replaceRecords(id: string, count: number) {
+      await prisma.$transaction(async (tx) => {
+        await tx.datasetRecord.deleteMany({ where: { datasetId: id } });
+        await tx.datasetRecord.createMany({ data: rows(count, "b").map((data) => ({ datasetId: id, data })) });
+      });
+      cache.clear();
+    }
+
+    describe("keyset cursor generation (r1-14, R2-02)", () => {
+      it("continues a cursor within one generation, and treats after=0 / garbage as 'from the start'", async () => {
+        await seedRecords(`${F2}gen`, 10);
+        const first = await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, limit: 4 });
+        expect(first?.rows).toHaveLength(4);
+        const second = await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: first?.nextAfter, limit: 4 });
+        expect(second?.rows.map((r) => r.data.n)).toEqual([5, 6, 7, 8]);
+        expect((await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: "0", limit: 2 }))?.rows).toHaveLength(2);
+        expect((await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: "000", limit: 2 }))?.rows[0].data.n).toBe(1);
+        expect((await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: "1; DROP TABLE x", limit: 2 }))?.rows[0].data.n).toBe(1);
+      });
+
+      it("rejects a cursor from before a sync replaced the rows, instead of re-reading the new copy from row 1", async () => {
+        const { StaleCursorError } = await import("@/lib/records-query");
+        await seedRecords(`${F2}gen`, 10);
+        const first = await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, limit: 4 });
+        const cursor = first?.nextAfter as string;
+        await replaceRecords(`${F2}gen`, 12);
+        // Before the fix this returned the whole NEW copy from its first row (ids above the old cursor).
+        await expect(q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: cursor, limit: 4 })).rejects.toBeInstanceOf(StaleCursorError);
+        // Restarting works, and its cursors work.
+        const again = await q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, limit: 4 });
+        expect(again?.rows.map((r) => r.data.v)).toEqual(["b1", "b2", "b3", "b4"]);
+        await expect(q.getDatasetRecordsAfter({ datasetId: `${F2}gen`, after: again?.nextAfter, limit: 4 })).resolves.toBeTruthy();
+      });
+
+      it("a cursor at the very end of the data is valid (an empty page), and stale after a replace", async () => {
+        const { StaleCursorError } = await import("@/lib/records-query");
+        await seedRecords(`${F2}end`, 3);
+        const all = await q.getDatasetRecordsAfter({ datasetId: `${F2}end`, limit: 100 });
+        const last = all?.rows.at(-1)?.id as string;
+        const empty = await q.getDatasetRecordsAfter({ datasetId: `${F2}end`, after: last, limit: 5 });
+        expect(empty).toEqual({ rows: [], nextAfter: null });
+        await replaceRecords(`${F2}end`, 3);
+        await expect(q.getDatasetRecordsAfter({ datasetId: `${F2}end`, after: last })).rejects.toBeInstanceOf(StaleCursorError);
+      });
+
+      it("a record id of ANOTHER dataset is not a cursor here", async () => {
+        const { StaleCursorError } = await import("@/lib/records-query");
+        await seedRecords(`${F2}mine`, 5);
+        const other = await q.getDatasetRecordsAfter({ datasetId: "qtest-records", limit: 1 });
+        await expect(
+          q.getDatasetRecordsAfter({ datasetId: `${F2}mine`, after: other?.rows[0].id as string }),
+        ).rejects.toBeInstanceOf(StaleCursorError);
+      });
+
+      it("pages through a replaced dataset without ever mixing generations (the 70,000-read / 60,000-distinct repro, small)", async () => {
+        const { StaleCursorError } = await import("@/lib/records-query");
+        await seedRecords(`${F2}walk`, 30);
+        const seen: string[] = [];
+        let after: string | null = null;
+        let replaced = false;
+        let stale = false;
+        for (let guard = 0; guard < 20; guard++) {
+          try {
+            const page: Awaited<ReturnType<Queries["getDatasetRecordsAfter"]>> = await q.getDatasetRecordsAfter({ datasetId: `${F2}walk`, after, limit: 5 });
+            seen.push(...(page?.rows.map((r) => String(r.data.v)) ?? []));
+            after = page?.nextAfter ?? null;
+            if (!replaced && seen.length >= 10) {
+              await replaceRecords(`${F2}walk`, 30);
+              replaced = true;
+            }
+            if (after === null) break;
+          } catch (err) {
+            expect(err).toBeInstanceOf(StaleCursorError);
+            stale = true;
+            break;
+          }
+        }
+        expect(stale).toBe(true);
+        expect(seen.every((v) => v.startsWith("a"))).toBe(true); // nothing of the new generation was mixed in
+        expect(new Set(seen).size).toBe(seen.length); // and nothing twice
+      });
+    });
+
+    describe("the records route (JSON 409, CSV, slots)", () => {
+      type RouteModule = typeof import("@/app/api/v1/datasets/[id]/records/route");
+      let route: RouteModule;
+      let limits: typeof import("@/lib/api-limits");
+      const call = (id: string, query = "", ip: string | null = null) =>
+        route.GET(
+          new Request(`http://x.test/api/v1/datasets/${id}/records${query}`, { headers: ip ? { "cf-connecting-ip": ip } : {} }),
+          { params: Promise.resolve({ id }) },
+        );
+      const bodyText = async (res: Response) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(await res.arrayBuffer());
+      let ipCounter = 0;
+      const freshIp = () => `198.51.100.${(ipCounter = (ipCounter % 250) + 1)}`;
+      const savedProxy = process.env.TRUST_PROXY;
+
+      beforeEach(async () => {
+        route = await import("@/app/api/v1/datasets/[id]/records/route");
+        limits = await import("@/lib/api-limits");
+        process.env.TRUST_PROXY = "1";
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+      });
+      afterAll(() => {
+        if (savedProxy === undefined) delete process.env.TRUST_PROXY;
+        else process.env.TRUST_PROXY = savedProxy;
+      });
+
+      it("JSON: a stale cursor is 409 cursor_expired with a restart URL, not cacheable", async () => {
+        await seedRecords(`${F2}j`, 12);
+        const ip = freshIp();
+        const page = (await (await call(`${F2}j`, "?limit=5", ip)).json()) as { nextAfter: string; next: string };
+        expect(page.next).toContain(`after=${page.nextAfter}`);
+        await replaceRecords(`${F2}j`, 12);
+        const res = await call(`${F2}j`, `?after=${page.nextAfter}&limit=5`, ip);
+        expect(res.status).toBe(409);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        const body = (await res.json()) as { error: string; parameter: string; restart: string };
+        expect(body).toMatchObject({ error: "cursor_expired", parameter: "after" });
+        expect(body.restart).toMatch(/\/api\/v1\/datasets\/qtest-f2-j\/records\?limit=5$/);
+        const restarted = await call(`${F2}j`, "?limit=5", ip);
+        expect(restarted.status).toBe(200);
+      });
+
+      it("CSV: every stored row, exactly once, in id order, with the dataset's own partial flag", async () => {
+        await seedRecords(`${F2}csv`, 2500);
+        const res = await call(`${F2}csv`, "?format=csv", freshIp());
+        expect(res.status).toBe(200);
+        expect(res.headers.get("x-dataset-partial")).toBe("false");
+        const lines = (await bodyText(res)).split("\r\n");
+        expect(lines.pop()).toBe("");
+        expect(lines[0]).toBe("﻿n,v");
+        expect(lines).toHaveLength(2501); // header + 2,500 stored rows (the old cap was 200,000: this is the shape of that bug)
+        expect(lines.slice(1).map((l) => Number(l.split(",")[0]))).toEqual(Array.from({ length: 2500 }, (_, i) => i + 1));
+        expect(limits.csvStreamsInFlight()).toBe(0);
+      });
+
+      it("CSV: an unknown dataset is a 404 and a stale after is a 409 BEFORE any body, and neither keeps a slot", async () => {
+        const ip = freshIp();
+        expect((await call(`${F2}nope`, "?format=csv", ip)).status).toBe(404);
+        await seedRecords(`${F2}csv409`, 20);
+        const page = (await (await call(`${F2}csv409`, "?limit=5", ip)).json()) as { nextAfter: string };
+        await replaceRecords(`${F2}csv409`, 20);
+        const res = await call(`${F2}csv409`, `?format=csv&after=${page.nextAfter}`, ip);
+        expect(res.status).toBe(409);
+        expect((await res.json()) as { restart: string }).toMatchObject({ error: "cursor_expired" });
+        expect(limits.csvStreamsInFlight()).toBe(0);
+      });
+
+      it("CSV: a sync replacing the dataset mid-download ERRORS the stream, it does not end a short or duplicated file cleanly", async () => {
+        await seedRecords(`${F2}mid`, 2500);
+        const res = await call(`${F2}mid`, "?format=csv", freshIp());
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        const first = await reader.read(); // BOM + header + batch 1 (rows 1..1000)
+        expect(first.done).toBe(false);
+        await replaceRecords(`${F2}mid`, 2500);
+        let failure: unknown = null;
+        let chunks = 0;
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            chunks += 1;
+            if (chunks > 5) break;
+          }
+        } catch (err) {
+          failure = err;
+        }
+        expect(failure, "the stream must fail, not finish").toBeInstanceOf(Error);
+        expect(String((failure as Error).name)).toBe("StaleCursorError");
+        expect(limits.csvStreamsInFlight()).toBe(0); // the failed export gave its slot back
+      });
+
+      it("CSV: the slot is held until the body is finished or cancelled, never just until the Response exists", async () => {
+        await seedRecords(`${F2}slot`, 2500);
+        const ip = freshIp();
+        const a = await call(`${F2}slot`, "?format=csv", ip);
+        const b = await call(`${F2}slot`, "?format=csv", ip);
+        expect([a.status, b.status]).toEqual([200, 200]);
+        expect(limits.csvStreamsInFlight()).toBe(2); // two Response objects exist, two slots are held (run() would have said 0)
+
+        const c = await call(`${F2}slot`, "?format=csv", ip);
+        expect(c.status).toBe(429); // this client already has its two
+        expect(c.headers.get("retry-after")).toBeTruthy();
+        expect(c.headers.get("cache-control")).toBe("no-store");
+        expect(((await c.json()) as { error: string }).error).toBe("rate_limited");
+
+        // A different client is still served (the cap is per client, then global).
+        const other = await call(`${F2}slot`, "?format=csv", freshIp());
+        expect(other.status).toBe(200);
+        await other.body?.cancel();
+
+        await a.body?.cancel(); // the client hangs up: Next calls cancel() on the body
+        await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(1));
+        const d = await call(`${F2}slot`, "?format=csv", ip);
+        expect(d.status).toBe(200);
+        await d.body?.cancel();
+        await b.body?.cancel();
+        await vi.waitFor(() => expect(limits.csvStreamsInFlight()).toBe(0));
+      });
+
+      it("every JSON route is rate limited per client too, with a 429 that carries Retry-After", async () => {
+        const ip = freshIp();
+        const { API_READ_BUDGET } = limits;
+        let refused: Response | null = null;
+        for (let i = 0; i < API_READ_BUDGET.limit + 3 && !refused; i++) {
+          const res = await call(`${F2}nothing`, "?limit=1", ip);
+          if (res.status === 429) refused = res;
+        }
+        expect(refused?.status).toBe(429);
+        expect(Number(refused?.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+        expect(refused?.headers.get("access-control-allow-origin")).toBe("*");
+        // Another client is unaffected.
+        expect((await call(`${F2}nothing`, "?limit=1", freshIp())).status).toBe(404);
+      });
+    });
+
+    describe("featured band (R2-05)", () => {
+      it("getFeaturedDataset returns a live dataset (removedAt null, also on a cache hit) and null for a removed one", async () => {
+        await prisma.dataset.createMany({
+          data: [
+            fixtureRow({ id: `${F2}live`, titleClean: "Featured live", theme: "QTF2", viz: "area" }),
+            fixtureRow({ id: `${F2}gone`, titleClean: "Featured gone", theme: "QTF2", viz: "area", removed: true }),
+          ],
+        });
+        const live = await q.getFeaturedDataset(`${F2}live`);
+        expect(live?.removedAt).toBeNull();
+        const hit = cache.hits;
+        const liveAgain = await q.getFeaturedDataset(`${F2}live`);
+        expect(cache.hits).toBeGreaterThan(hit);
+        expect(liveAgain?.removedAt).toBeNull();
+
+        expect(await q.getFeaturedDataset(`${F2}gone`)).toBeNull();
+        // ... while the card itself still exists for callers that ask by id, with a revived Date.
+        const card = await q.getDatasetCard(`${F2}gone`);
+        expect(card?.removedAt).toBeInstanceOf(Date);
+        expect((await q.getDatasetCard(`${F2}gone`))?.removedAt).toBeInstanceOf(Date); // cache hit
+        expect(await q.getFeaturedDataset("qtest-f2-missing")).toBeNull();
+      });
+
+      it("removed datasets are still absent from every list (unchanged)", async () => {
+        await prisma.dataset.create({ data: fixtureRow({ id: `${F2}gone`, titleClean: "Zzgone", theme: "QTF2", removed: true }) });
+        expect((await q.listDatasets({ q: "zzgone" })).items).toHaveLength(0);
+      });
+    });
+
+    describe("themes (R2-06)", () => {
+      it.each([100, 101, 150, 200])("a theme of %i characters has a tile, a lookup and a non-empty listing", async (length) => {
+        const theme = `${"T".repeat(length - 1)}ص`;
+        await prisma.dataset.create({ data: fixtureRow({ id: `${F2}theme-${length}`, titleClean: `Long theme ${length}`, theme }) });
+        const counts = await q.getThemeCounts();
+        expect(counts.find((t) => t.theme === theme)?.count).toBe(1);
+        expect((await q.findTheme(theme))?.theme).toBe(theme);
+        const result = await q.getDatasetsByTheme(theme, 1);
+        expect(result.status).toBe("ok"); // it used to be "unknown-theme" past 100 characters
+        expect(result.total).toBe(1);
+        expect(result.items[0].id).toBe(`${F2}theme-${length}`);
+        expect(result.facets.themes.find((t) => t.theme === theme)?.count).toBe(1);
+      });
+    });
+
+    describe("publishers (R2-07)", () => {
+      const ARABIC = ["وزارة الداخلية", "هيئة المعلومات والحكومة الإلكترونية"];
+      const LONG = `Ministry of ${"Something Very Long ".repeat(16)}`; // > 300 characters
+
+      it("Arabic-only and over-long publisher names get distinct, valid, reachable slugs", async () => {
+        const { isValidPublisherSlug } = await import("@/lib/cache-config");
+        await prisma.dataset.createMany({
+          data: [
+            fixtureRow({ id: `${F2}p-ar-1`, titleClean: "Ar one", publisher: ARABIC[0] }),
+            fixtureRow({ id: `${F2}p-ar-2`, titleClean: "Ar two", publisher: ARABIC[1] }),
+            fixtureRow({ id: `${F2}p-long`, titleClean: "Long pub", publisher: LONG }),
+            fixtureRow({ id: `${F2}p-blank`, titleClean: "Blank pub", publisher: "   " }),
+          ],
+        });
+        const counts = await q.getPublisherCounts();
+        const mine = counts.filter((p) => [...ARABIC, LONG].some((n) => p.names.includes(n)));
+        expect(mine).toHaveLength(3); // the two Arabic publishers no longer merge into one
+        expect(new Set(mine.map((p) => p.slug)).size).toBe(3);
+        for (const p of mine) {
+          expect(p.slug).not.toBe("");
+          expect(isValidPublisherSlug(p.slug)).toBe(true);
+          expect(p.name).toBe(p.names[0]);
+        }
+        expect(counts.some((p) => p.slug === "" || p.name.trim() === "")).toBe(false); // a blank name is no publisher
+
+        for (const p of mine) {
+          expect((await q.findPublisher(p.slug))?.name).toBe(p.name);
+          const list = await q.getDatasetsByPublisherSlug(p.slug, 1);
+          expect(list.status).toBe("ok");
+          expect(list.total).toBe(1);
+          expect(list.publisherName).toBe(p.name);
+        }
+        const facets = (await q.listDatasets({})).facets.publishers;
+        expect(mine.every((p) => facets.some((f) => f.slug === p.slug))).toBe(true);
+      });
+
+      it("the sitemap lists each of them once and never '/publishers/' with an empty slug", async () => {
+        await prisma.dataset.createMany({
+          data: [
+            fixtureRow({ id: `${F2}p-ar-1`, titleClean: "Ar one", publisher: ARABIC[0] }),
+            fixtureRow({ id: `${F2}p-ar-2`, titleClean: "Ar two", publisher: ARABIC[1] }),
+          ],
+        });
+        const sitemap = (await import("@/app/sitemap")).default;
+        const urls = (await sitemap()).map((e) => e.url);
+        expect(urls.some((u) => /\/publishers\/$/.test(u))).toBe(false);
+        const slugs = (await q.getPublisherCounts()).filter((p) => ARABIC.some((n) => p.names.includes(n))).map((p) => p.slug);
+        expect(slugs).toHaveLength(2);
+        for (const slug of slugs) expect(urls.filter((u) => u.endsWith(`/publishers/${slug}`))).toHaveLength(1);
+      });
+
+      it("the hero publisher count includes them (it used to be one short)", async () => {
+        const before = (await q.getPublisherCounts()).length;
+        await prisma.dataset.createMany({
+          data: [
+            fixtureRow({ id: `${F2}p-ar-1`, titleClean: "Ar one", publisher: ARABIC[0] }),
+            fixtureRow({ id: `${F2}p-ar-2`, titleClean: "Ar two", publisher: ARABIC[1] }),
+          ],
+        });
+        cache.clear();
+        const stats = await q.getPortalStats();
+        const after = (await q.getPublisherCounts()).length;
+        expect(after).toBe(before + 2);
+        expect(stats.publisherCount).toBe(after);
+      });
+    });
+
+    describe("/updates metadata count (R2-13)", () => {
+      it("countRecentlyUpdated agrees with getRecentlyUpdated for every window", async () => {
+        for (const days of [null, 1, 7, 30, 90, 3650]) {
+          const listed = await q.getRecentlyUpdated({ sinceDays: days, pageSize: 100 });
+          expect(await q.countRecentlyUpdated(days), `window ${days}`).toBe(listed.total);
+        }
+        expect(await q.countRecentlyUpdated(0)).toBe(await q.countRecentlyUpdated(null)); // invalid window = all time, like the list
+      });
+    });
+
+    describe("in-table search share per client (R2-11)", () => {
+      it("one client cannot take every expensive-query slot; another client is still admitted", async () => {
+        const waiting: Array<(value: unknown) => void> = [];
+        vi.spyOn(prisma, "$transaction").mockImplementation((() => new Promise((resolve) => waiting.push(resolve))) as never);
+        const sorted = (page: number, client?: string) =>
+          q.getDatasetRecordsPage({ datasetId: "qtest-records", page, sort: "value", ...(client ? { client } : {}) });
+        const hog = [2, 3].map((page) => sorted(page, "client-hog"));
+        for (let i = 0; i < 100 && waiting.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+        expect(waiting).toHaveLength(2); // the hog holds its share (half of the 4 slots)
+
+        const refused = await sorted(2, "client-hog");
+        expect(refused.sortFailed).toBe(true);
+        expect(refused.throttled).toBe(true); // "slow down", not "the search failed"
+        expect(refused.rows).toHaveLength(25); // degraded to id order, still a page
+
+        const polite = sorted(2, "client-polite");
+        for (let i = 0; i < 100 && waiting.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+        expect(waiting).toHaveLength(3); // the other client got a slot while the hog was refused
+
+        for (const resolve of waiting) resolve([]);
+        await Promise.all([...hog, polite]);
+        vi.restoreAllMocks();
+        const after = await sorted(2, "client-hog");
+        expect(after.throttled).toBe(false); // the share came back
+        expect(after.sortFailed).toBe(false);
+      });
+
+      it("a client over its per-minute budget of sorted/searched queries is refused with throttled=true", async () => {
+        const client = `budget-${Math.random()}`;
+        let refused = 0;
+        for (let i = 0; i < 130 && refused === 0; i++) {
+          const r = await q.getDatasetRecordsPage({ datasetId: "qtest-records", page: 2, sort: "value", client });
+          if (r.throttled) refused += 1;
+        }
+        expect(refused).toBe(1); // after 120 heavy queries inside the window
+      });
+
+      it("without a client key only the global cap applies (unchanged), and throttled is false", async () => {
+        const r = await q.getDatasetRecordsPage({ datasetId: "qtest-records", page: 2, sort: "value" });
+        expect(r.throttled).toBe(false);
+        expect(r.sortField).toBe("value");
+      });
+    });
+  });
 });

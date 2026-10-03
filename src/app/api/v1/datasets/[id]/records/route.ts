@@ -5,26 +5,38 @@
  *   limit   1..1000 (default 100); rows come back ORDER BY id
  *   format  json (default) | csv
  *
- * Keyset, not OFFSET: page 500 costs the same as page 1 and rows added by a
- * sync never shift a reader's position. `format=csv` ignores `limit` and
- * STREAMS every remaining row (UTF-8 with a BOM so Excel reads Arabic; cells
- * that a spreadsheet would execute are neutralized, see `csvCell`), batch by
- * batch, so memory stays flat however large the dataset is. Partial datasets
- * serve their stored rows only (`partial: true`, `X-Dataset-Partial: true`).
+ * Keyset, not OFFSET: page 500 costs the same as page 1. A cursor is valid only within
+ * one GENERATION of the dataset's rows: a sync that changes a dataset replaces ALL its
+ * rows (new, higher ids), so a cursor issued before it points at rows that no longer
+ * exist. Rather than silently restart from row 1 (a duplicated prefix under new ids),
+ * such a request is answered 409 `cursor_expired` with a `restart` URL; see
+ * `getDatasetRecordsAfter`.
+ *
+ * `format=csv` ignores `limit` and STREAMS every remaining row (UTF-8 with a BOM so
+ * Excel reads Arabic; cells that a spreadsheet would execute are neutralized, see
+ * `csvCell`), batch by batch, so memory stays flat however large the dataset is. It is
+ * one stream: if the dataset is replaced mid-download the stream ERRORS (a failed
+ * download, never a truncated file that looks complete) and the client retries. Partial
+ * datasets serve their stored rows only (`partial: true`, `X-Dataset-Partial: true`);
+ * the header describes the DATASET, not the export.
+ *
+ * Abuse limits (`@/lib/api-limits`): a per-client request budget on every call, a much
+ * smaller one for CSV, and a cap on concurrent CSV streams per client and per server.
  */
 
-import { getDatasetRecordsAfter, getRecordsMeta, type RecordsMeta } from "@/lib/queries";
+import { getDatasetRecordsAfter, getRecordsMeta } from "@/lib/queries";
+import { StaleCursorError } from "@/lib/records-query";
 import { SITE_URL } from "@/lib/site";
+import { acquireCsvSlot, guardApi, wantsCsv } from "@/lib/api-limits";
+import { createCsvStream } from "@/lib/csv-export";
 import {
   ApiParamError,
   CACHE_PUBLIC,
-  CSV_BOM,
-  CSV_MAX_ROWS,
   API_RECORDS_MAX_LIMIT,
   badRequest,
   corsHeaders,
   csvContentDisposition,
-  csvRow,
+  cursorExpired,
   jsonOk,
   notFound,
   parseDatasetId,
@@ -39,74 +51,65 @@ export function OPTIONS() {
   return preflight();
 }
 
-type Row = { id: string; data: Record<string, unknown> };
-
-/** Pull-based stream: each `pull` loads one 1000-row batch, so a slow client never makes the server buffer the dataset. */
-function csvStream(meta: RecordsMeta, startAfter: string | null): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let columns = meta.fields.map((f) => f.name);
-  let headerSent = false;
-  let after = startAfter;
-  let sent = 0;
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const batch = await getDatasetRecordsAfter({ datasetId: meta.id, after, limit: API_RECORDS_MAX_LIMIT });
-        const rows: Row[] = batch?.rows ?? [];
-
-        let chunk = "";
-        if (!headerSent) {
-          // A dataset with no field dictionary still gets sensible columns: the first row's keys.
-          if (columns.length === 0 && rows.length > 0) columns = Object.keys(rows[0].data);
-          chunk += CSV_BOM + csvRow(columns);
-          headerSent = true;
-        }
-        for (const row of rows) chunk += csvRow(columns.map((c) => row.data[c]));
-        controller.enqueue(encoder.encode(chunk));
-
-        sent += rows.length;
-        after = batch?.nextAfter ?? null;
-        if (after === null || rows.length === 0 || sent >= CSV_MAX_ROWS) controller.close();
-      } catch (err) {
-        // Headers are long gone: abort the connection so the client sees a failed download, not a truncated "complete" file.
-        console.error("[api/v1/records csv] stream failed:", err);
-        controller.error(err);
-      }
-    },
-  });
-}
-
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const url = new URL(req.url);
+  const csv = wantsCsv(url.searchParams);
+  const limited = guardApi(req, csv ? "csv" : "read");
+  if (limited) return limited;
+
+  // The export slot, once taken, belongs to the stream. Until the stream exists it is given back here.
+  let release: (() => void) | null = null;
+  // The same request without `after`, for a 409's `restart`.
+  let restart = "";
   try {
     const id = parseDatasetId((await ctx.params).id);
     if (!id) return notFound("Dataset");
-    const query = parseRecordsQuery(new URL(req.url).searchParams);
-
-    const meta = await getRecordsMeta(id);
-    if (!meta) return notFound("Dataset");
-    const partial = meta.syncStatus === "partial";
+    const query = parseRecordsQuery(url.searchParams);
+    const base = `${SITE_URL}/api/v1/datasets/${encodeURIComponent(id)}/records`;
+    restart = query.format === "csv" ? `${base}?format=csv` : `${base}?limit=${query.limit}`;
 
     if (query.format === "csv") {
-      return new Response(csvStream(meta, query.after), {
+      const slot = acquireCsvSlot(req); // before reading anything: a refused export costs nothing
+      if (slot instanceof Response) return slot;
+      release = slot.release;
+
+      const meta = await getRecordsMeta(id);
+      if (!meta) return notFound("Dataset");
+      const first = await getDatasetRecordsAfter({ datasetId: id, after: query.after, limit: API_RECORDS_MAX_LIMIT });
+      if (!first) return notFound("Dataset");
+
+      const body = createCsvStream({
+        columns: meta.fields.map((f) => f.name),
+        first,
+        next: (after) => getDatasetRecordsAfter({ datasetId: id, after, limit: API_RECORDS_MAX_LIMIT }),
+        onEnd: slot.release,
+        onAbort: (err) =>
+          console.error(
+            `[api/v1/records csv] ${id}: export aborted:`,
+            err instanceof StaleCursorError ? "the dataset was replaced mid-export" : err,
+          ),
+      });
+      const response = new Response(body, {
         status: 200,
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": csvContentDisposition(id),
           "Cache-Control": CACHE_PUBLIC,
-          "X-Dataset-Partial": String(partial),
-          "Access-Control-Expose-Headers": "Content-Disposition, X-Dataset-Partial",
+          "X-Dataset-Partial": String(meta.syncStatus === "partial"),
           ...corsHeaders(),
         },
       });
+      release = null; // handed over: the stream frees the slot when it ends, fails or is cancelled
+      return response;
     }
 
+    const meta = await getRecordsMeta(id);
+    if (!meta) return notFound("Dataset");
     const page = await getDatasetRecordsAfter({ datasetId: id, after: query.after, limit: query.limit });
     if (!page) return notFound("Dataset");
-    const base = `${SITE_URL}/api/v1/datasets/${encodeURIComponent(id)}/records`;
     return jsonOk({
       id,
-      partial,
+      partial: meta.syncStatus === "partial",
       /** Rows this mirror stores and serves; `recordsCount` is the portal's own (larger for partial datasets). */
       storedRecordsCount: meta.sourceCount,
       recordsCount: meta.recordsCount,
@@ -114,12 +117,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       limit: query.limit,
       count: page.rows.length,
       nextAfter: page.nextAfter,
-      next: page.nextAfter ? `${base}?after=${page.nextAfter}&limit=${query.limit}` : null,
+      next: page.nextAfter ? `${base}?after=${encodeURIComponent(page.nextAfter)}&limit=${query.limit}` : null,
       records: page.rows,
     });
   } catch (err) {
     if (err instanceof ApiParamError) return badRequest(err);
+    if (err instanceof StaleCursorError) return cursorExpired(restart);
     console.error("[api/v1/datasets/:id/records] failed:", err);
     return serverError();
+  } finally {
+    release?.();
   }
 }

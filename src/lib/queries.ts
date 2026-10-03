@@ -43,12 +43,14 @@ import { escapeLike } from "@/lib/search";
 import {
   DATASETS_TAG,
   DETAIL_TTL_MULTIPLIER,
+  MAX_THEME_LENGTH,
   datasetTag,
   isValidDatasetId,
   isValidPublisherSlug,
   resolveCacheTtl,
 } from "@/lib/cache-config";
-import { BusyError, createSlotLimiter, type SlotLimiter } from "@/lib/slot-limiter";
+import { rateLimit } from "@/lib/rate-limit";
+import { BusyError, createSlotLimiter, resolveHeavyQueryLimit, type SlotLimiter } from "@/lib/slot-limiter";
 import { clampPage, offsetFor, totalPagesFor } from "@/lib/page-math";
 import { buildListParams, sinceCutoff, type ListParams, type ListParamsInput } from "@/lib/list-query";
 import { compareByUpdated, compareRanked, scoreMatch } from "@/lib/ranking";
@@ -56,6 +58,7 @@ import {
   NUMERIC_TEXT_RE,
   RECORDS_PAGE_SIZE,
   RECORDS_STATEMENT_TIMEOUT_MS,
+  StaleCursorError,
   normalizeRecordsQuery,
   resolveSortField,
   type RecordsSearch,
@@ -157,6 +160,8 @@ const DATASET_CARD_SELECT = {
   sourceModified: true,
   lastSyncedAt: true,
   syncStatus: true,
+  /** Set when the portal withdrew the dataset. Every list query already excludes such rows; this lets a card loaded by id (the featured band) say so. */
+  removedAt: true,
   chartData: true,
   vizConfig: true,
 } satisfies Prisma.DatasetSelect;
@@ -195,7 +200,13 @@ const DATASET_DETAIL_SELECT = {
 export type DatasetDetailRow = Prisma.DatasetGetPayload<{ select: typeof DATASET_DETAIL_SELECT }>;
 
 function reviveCard(row: DatasetCardRow): DatasetCardRow {
-  return { ...row, sourceModified: toDate(row.sourceModified), lastSyncedAt: toDate(row.lastSyncedAt) };
+  return {
+    ...row,
+    sourceModified: toDate(row.sourceModified),
+    lastSyncedAt: toDate(row.lastSyncedAt),
+    // An entry cached before this column was selected has no `removedAt` at all; `toDate` reads that as null (live).
+    removedAt: toDate(row.removedAt),
+  };
 }
 
 function reviveDetail(row: DatasetDetailRow): DatasetDetailRow {
@@ -270,7 +281,7 @@ const loadPortalStats = unstable_cache(
       }),
     ]);
     // Count publishers by slug, like /publishers does, so whitespace-variant duplicates are one publisher.
-    const publisherCount = new Set(publisherGroups.map((g) => slugify(g.publisher as string))).size;
+    const publisherCount = new Set(publisherGroups.map((g) => publisherSlug(g.publisher)).filter((s) => s !== null)).size;
     return {
       totalDatasets,
       publisherCount,
@@ -334,9 +345,16 @@ export async function getDatasetCards(ids: readonly string[]): Promise<DatasetCa
   return cards.filter((c): c is DatasetCardRow => c !== null);
 }
 
-/** Home page featured band (src/config/featured.ts entries). */
-export function getFeaturedDataset(datasetId: string): Promise<DatasetCardRow | null> {
-  return getDatasetCard(datasetId);
+/**
+ * Home page featured band (src/config/featured.ts entries). Live datasets only: a dataset the portal
+ * withdrew stays loadable by id (its page says so), but it must not keep being headlined as a current
+ * indicator. The check is here and not in `getDatasetCard`, which the list pages and the related strip
+ * share and which they already feed with live ids; and it is not a `removedAt: null` in the cached
+ * loader, because a removed id would then be a "miss" that is never cached.
+ */
+export async function getFeaturedDataset(datasetId: string): Promise<DatasetCardRow | null> {
+  const card = await getDatasetCard(datasetId);
+  return card && card.removedAt === null ? card : null;
 }
 
 /**
@@ -414,7 +432,7 @@ export const getThemeCounts = unstable_cache(
  * query or a cache key and the page can return a genuine 404.
  */
 export async function findTheme(theme: string): Promise<ThemeCount | null> {
-  if (typeof theme !== "string" || theme === "" || theme.length > 200) return null;
+  if (typeof theme !== "string" || theme === "" || theme.length > MAX_THEME_LENGTH) return null;
   return (await getThemeCounts()).find((t) => t.theme === theme) ?? null;
 }
 
@@ -430,6 +448,15 @@ export async function findTheme(theme: string): Promise<ThemeCount | null> {
 // and the listing merges any such collisions into a single tile instead
 // of producing two tiles that would both link to the same URL.
 // ---------------------------------------------------------------------------
+
+/**
+ * The URL slug of a publisher name: always valid (see `slugify`), or null for a blank name. EVERY
+ * consumer (tiles, filter, facets, hero count, the dataset page's link) goes through this one function,
+ * so they cannot disagree about which publisher a name is.
+ */
+function publisherSlug(name: string | null | undefined): string | null {
+  return typeof name === "string" && name.trim() !== "" ? slugify(name) : null;
+}
 
 export interface PublisherCount {
   slug: string;
@@ -450,7 +477,8 @@ export const getPublisherCounts = unstable_cache(
     for (const g of groups) {
       const raw = g.publisher as string;
       const count = g._count._all;
-      const slug = slugify(raw);
+      const slug = publisherSlug(raw);
+      if (slug === null) continue; // a blank name is no publisher: no tile, no (empty) slug
       const existing = bySlug.get(slug);
       if (!existing) {
         bySlug.set(slug, { name: raw, count, names: [raw] });
@@ -653,7 +681,7 @@ export async function listDatasets(input: ListParamsInput | ListParams, options:
     select: LIST_ROW_SELECT,
   });
 
-  const slugOf = (row: ListRow) => (row.publisher ? slugify(row.publisher) : null);
+  const slugOf = (row: ListRow) => publisherSlug(row.publisher);
   const matchesTheme = (row: ListRow) => theme === null || row.theme === theme.theme;
   const matchesPublisher = (row: ListRow) => publisher === null || slugOf(row) === publisher.slug;
 
@@ -784,6 +812,24 @@ export interface RecentlyUpdated extends PaginatedDatasets {
   sinceDays: number | null;
 }
 
+/** `sinceDays` as `getRecentlyUpdated` understands it: an integer 1..3650, anything else is "all time". */
+function validSinceDays(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 3650 ? value : null;
+}
+
+/**
+ * Which datasets /updates lists. ONE builder for the listing and for its count, so the page body and
+ * the metadata that clamps `?page=` (title, canonical) can never disagree about how many pages exist.
+ */
+function recentlyUpdatedWhere(sinceDays: number | null): Prisma.DatasetWhereInput {
+  const cutoff = sinceDays === null ? null : new Date(Date.now() - sinceDays * 86_400_000);
+  return {
+    removedAt: null,
+    lastSyncedAt: { not: null },
+    sourceModified: cutoff ? { not: null, gte: cutoff } : { not: null },
+  };
+}
+
 /**
  * `/updates`: paginated, newest source-modified first. Live and synced
  * datasets with a known modified date only (an undated dataset cannot be
@@ -796,21 +842,10 @@ export async function getRecentlyUpdated(
   const pageSize = Number.isSafeInteger(options.pageSize)
     ? Math.min(Math.max(options.pageSize as number, 1), 100)
     : THEME_PAGE_SIZE;
-  const sinceDays =
-    typeof options.sinceDays === "number" &&
-    Number.isSafeInteger(options.sinceDays) &&
-    options.sinceDays >= 1 &&
-    options.sinceDays <= 3650
-      ? options.sinceDays
-      : null;
-  const cutoff = sinceDays === null ? null : new Date(Date.now() - sinceDays * 86_400_000);
+  const sinceDays = validSinceDays(options.sinceDays);
 
   const rows = await prisma.dataset.findMany({
-    where: {
-      removedAt: null,
-      lastSyncedAt: { not: null },
-      sourceModified: cutoff ? { not: null, gte: cutoff } : { not: null },
-    },
+    where: recentlyUpdatedWhere(sinceDays),
     orderBy: [{ sourceModified: "desc" }, { id: "asc" }],
     select: { id: true },
   });
@@ -821,6 +856,15 @@ export async function getRecentlyUpdated(
   const offset = offsetFor(page, pageSize);
   const items = await getDatasetCards(rows.slice(offset, offset + pageSize).map((r) => r.id));
   return { items, total, page, pageSize, totalPages, sinceDays };
+}
+
+/**
+ * How many datasets `getRecentlyUpdated` lists for a window, WITHOUT loading them: one `COUNT`.
+ * `generateMetadata` uses it to clamp `?page=` the way the body does (calling `getRecentlyUpdated`
+ * there would load every matching id and the page's cards a second time per request).
+ */
+export async function countRecentlyUpdated(sinceDays: number | null = null): Promise<number> {
+  return prisma.dataset.count({ where: recentlyUpdatedWhere(validSinceDays(sinceDays)) });
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +961,13 @@ export interface RecordsPage {
   sortFailed: boolean;
   /** The in-table search timed out or failed; `rows` is empty and `total` 0. */
   searchFailed: boolean;
+  /**
+   * A sort or search was REFUSED rather than attempted: this client is over its share of the expensive
+   * queries, or every slot is taken. It is also reported as `sortFailed` / `searchFailed` (the page
+   * degrades the same way); the flag lets the UI say "too many requests, wait a moment" instead of
+   * "the search failed".
+   */
+  throttled: boolean;
 }
 
 export interface RecordsPageOptions {
@@ -930,6 +981,12 @@ export interface RecordsPageOptions {
   rq?: string | null;
   /** Row count when the caller already has `dataset.sourceCount`; ignored when `rq` is set. */
   total?: number;
+  /**
+   * Who is asking (`clientKey(headers)` of the request). With it, a sort or search counts against that
+   * client's own budget and its share of the expensive-query slots, so one client cannot take every
+   * slot and turn the in-table search off for everybody else. Without it only the global cap applies.
+   */
+  client?: string | null;
 }
 
 type RecordRow = { id: bigint; data: unknown };
@@ -938,7 +995,10 @@ function toRecordRows(rows: RecordRow[]): RecordsPage["rows"] {
   return rows.map((r) => ({ id: String(r.id), data: (r.data ?? {}) as Record<string, unknown> }));
 }
 
-function emptyRecordsPage(dir: "asc" | "desc", flags: Partial<Pick<RecordsPage, "searchFailed" | "rq">> = {}): RecordsPage {
+function emptyRecordsPage(
+  dir: "asc" | "desc",
+  flags: Partial<Pick<RecordsPage, "searchFailed" | "rq" | "throttled">> = {},
+): RecordsPage {
   return {
     rows: [],
     total: 0,
@@ -950,6 +1010,7 @@ function emptyRecordsPage(dir: "asc" | "desc", flags: Partial<Pick<RecordsPage, 
     rq: null,
     sortFailed: false,
     searchFailed: false,
+    throttled: false,
     ...flags,
   };
 }
@@ -959,17 +1020,27 @@ function emptyRecordsPage(dir: "asc" | "desc", flags: Partial<Pick<RecordsPage, 
  * RECORDS_STATEMENT_TIMEOUT_MS. `SET LOCAL` semantics via `set_config(..., true)`:
  * the limit dies with the transaction and never leaks onto the pooled connection.
  */
-function runRaw<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  // At most HEAVY_QUERY_LIMIT of these run at once per process; the rest fail fast (BusyError)
-  // and degrade like a timeout, so a burst of sorted/searched requests cannot starve the pool.
-  return heavyQueries.run(() =>
-    prisma.$transaction(
-      async (tx) => {
-        await tx.$queryRaw`SELECT set_config('statement_timeout', ${String(RECORDS_STATEMENT_TIMEOUT_MS)}, true)`;
-        return fn(tx);
-      },
-      { maxWait: 5_000, timeout: RECORDS_STATEMENT_TIMEOUT_MS * 3 },
-    ),
+function runRaw<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>, client?: string | null): Promise<T> {
+  // At most HEAVY_QUERY_LIMIT of these run at once per process, and one client at most HEAVY_PER_CLIENT
+  // of them; the rest fail fast (BusyError) and degrade like a timeout, so a burst of sorted/searched
+  // requests cannot starve the pool, and one client cannot hold every slot.
+  const key = client ? `heavy:${client}` : undefined;
+  if (key !== undefined) {
+    const budget = rateLimit(key, HEAVY_CLIENT_RATE);
+    if (!budget.ok) return Promise.reject(new BusyError("client over its sorted/searched query budget", "client"));
+  }
+  return heavyQueries.run(
+    () =>
+      prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT set_config('statement_timeout', ${String(RECORDS_STATEMENT_TIMEOUT_MS)}, true)`;
+          return fn(tx);
+        },
+        // maxWait: how long an admitted query may wait for a pooled connection. It holds a heavy slot
+        // meanwhile, so keep it short: under pressure it is better to degrade than to sit on a slot.
+        { maxWait: 1_000, timeout: RECORDS_STATEMENT_TIMEOUT_MS * 3 },
+      ),
+    key,
   );
 }
 
@@ -977,14 +1048,40 @@ function runRaw<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T>
  * Concurrent sorted/searched record queries allowed per process (see
  * `src/lib/slot-limiter.ts`). Kept on `globalThis` because Next may evaluate
  * this module once per route bundle, and the cap must be shared by all of them.
+ *
+ * The cap is `HEAVY_QUERY_LIMIT` (env, default 4), lowered to the Prisma pool minus two when
+ * `connection_limit` is set in DATABASE_URL: the cheap queries that serve every other page then
+ * always find a free connection, however hard the in-table search is hammered.
  */
-const HEAVY_QUERY_LIMIT = 4;
+const HEAVY_QUERY_LIMIT = resolveHeavyQueryLimit(process.env.HEAVY_QUERY_LIMIT, process.env.DATABASE_URL, (message) =>
+  console.warn(`[queries] ${message}`),
+);
+/** One client may hold at most half of the slots (at least one). */
+const HEAVY_PER_CLIENT = Math.max(1, Math.floor(HEAVY_QUERY_LIMIT / 2));
+/** Sorted/searched queries one client may start per minute (a search is two: the COUNT, then the page). */
+const HEAVY_CLIENT_RATE = { limit: 120, windowMs: 60_000 };
 const globalForLimiter = globalThis as unknown as { __nabdHeavyQueries?: SlotLimiter };
-const heavyQueries = (globalForLimiter.__nabdHeavyQueries ??= createSlotLimiter(HEAVY_QUERY_LIMIT));
+const heavyQueries = (globalForLimiter.__nabdHeavyQueries ??= createSlotLimiter(HEAVY_QUERY_LIMIT, {
+  perKey: HEAVY_PER_CLIENT,
+}));
 
+/** Under attack a refusal happens thousands of times a second; log the first of each burst, then a count. */
+let lastBusyLog = 0;
+let busySuppressed = 0;
 function logRecordsFailure(message: string, err: unknown): void {
-  if (err instanceof BusyError) console.warn(`[queries] ${message}: ${err.message}`);
-  else console.error(`[queries] ${message}:`, err);
+  if (!(err instanceof BusyError)) {
+    console.error(`[queries] ${message}:`, err);
+    return;
+  }
+  const now = Date.now();
+  if (now - lastBusyLog < 10_000) {
+    busySuppressed += 1;
+    return;
+  }
+  lastBusyLog = now;
+  const more = busySuppressed > 0 ? ` (+${busySuppressed} similar refusals in the last 10 s)` : "";
+  busySuppressed = 0;
+  console.warn(`[queries] ${message}: ${err.message}${more}`);
 }
 
 let icuProbe: Promise<boolean> | null = null;
@@ -1069,10 +1166,12 @@ interface RecordsRequest {
   search: RecordsSearch | null;
   page: number;
   knownTotal: number;
+  /** Who is asking, for the per-client share of the expensive-query slots (see `runRaw`). */
+  client: string | null;
 }
 
 async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
-  const { meta, sort, dir, search } = req;
+  const { meta, sort, dir, search, client } = req;
   const pageSize = RECORDS_PAGE_SIZE;
   const rq = search?.text ?? null;
 
@@ -1080,15 +1179,17 @@ async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
   if (search) {
     // Only here is a COUNT needed: a plain page uses the dataset's stored row count.
     try {
-      const [{ n }] = await runRaw((tx) =>
-        tx.$queryRaw<Array<{ n: number }>>(
-          Prisma.sql`SELECT count(*)::int AS n FROM "DatasetRecord" r WHERE ${recordsWhere(meta.id, search)}`,
-        ),
+      const [{ n }] = await runRaw(
+        (tx) =>
+          tx.$queryRaw<Array<{ n: number }>>(
+            Prisma.sql`SELECT count(*)::int AS n FROM "DatasetRecord" r WHERE ${recordsWhere(meta.id, search)}`,
+          ),
+        client,
       );
       total = n;
     } catch (err) {
       logRecordsFailure(`records search count failed for ${meta.id}`, err);
-      return emptyRecordsPage(dir, { searchFailed: true, rq });
+      return emptyRecordsPage(dir, { searchFailed: true, rq, throttled: err instanceof BusyError });
     }
   }
 
@@ -1109,21 +1210,23 @@ async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
         LIMIT ${pageSize} OFFSET ${skip}`);
     }
     const icu = candidate && !candidate.numeric ? await icuCollationAvailable() : false;
-    return runRaw((tx) =>
-      tx.$queryRaw<RecordRow[]>(
-        candidate
-          ? Prisma.sql`
-              SELECT r.id, r.data FROM "DatasetRecord" r
-              CROSS JOIN LATERAL (SELECT r.data ->> ${candidate.name}::text AS v) k
-              WHERE ${recordsWhere(meta.id, search)}
-              ORDER BY ${recordsOrder(candidate, dir, icu)}
-              LIMIT ${pageSize} OFFSET ${skip}`
-          : Prisma.sql`
-              SELECT r.id, r.data FROM "DatasetRecord" r
-              WHERE ${recordsWhere(meta.id, search)}
-              ORDER BY r."datasetId", r.id
-              LIMIT ${pageSize} OFFSET ${skip}`,
-      ),
+    return runRaw(
+      (tx) =>
+        tx.$queryRaw<RecordRow[]>(
+          candidate
+            ? Prisma.sql`
+                SELECT r.id, r.data FROM "DatasetRecord" r
+                CROSS JOIN LATERAL (SELECT r.data ->> ${candidate.name}::text AS v) k
+                WHERE ${recordsWhere(meta.id, search)}
+                ORDER BY ${recordsOrder(candidate, dir, icu)}
+                LIMIT ${pageSize} OFFSET ${skip}`
+            : Prisma.sql`
+                SELECT r.id, r.data FROM "DatasetRecord" r
+                WHERE ${recordsWhere(meta.id, search)}
+                ORDER BY r."datasetId", r.id
+                LIMIT ${pageSize} OFFSET ${skip}`,
+        ),
+      client,
     );
   };
 
@@ -1132,6 +1235,7 @@ async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
   let rows: RecordRow[] | null = null;
   let usedSort: SortField | null = null;
   let sortFailed = false;
+  let throttled = false;
   for (const candidate of sort ? [sort, null] : [null]) {
     try {
       rows = await fetchRows(candidate);
@@ -1140,10 +1244,11 @@ async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
     } catch (err) {
       if (!candidate && !search) throw err;
       logRecordsFailure(`records query failed for ${meta.id} (sort=${candidate?.name ?? "none"})`, err);
+      if (err instanceof BusyError) throttled = true;
       if (candidate) sortFailed = true;
     }
   }
-  if (!rows) return emptyRecordsPage(dir, { searchFailed: true, rq });
+  if (!rows) return emptyRecordsPage(dir, { searchFailed: true, rq, throttled });
 
   return {
     rows: toRecordRows(rows),
@@ -1156,6 +1261,7 @@ async function loadRecordsPage(req: RecordsRequest): Promise<RecordsPage> {
     rq,
     sortFailed,
     searchFailed: false,
+    throttled,
   };
 }
 
@@ -1206,7 +1312,8 @@ export async function getDatasetRecordsPage(
     typeof options.total === "number" && Number.isSafeInteger(options.total) && options.total >= 0
       ? options.total
       : meta.sourceCount;
-  const req: RecordsRequest = { meta, sort, dir, search, page: options.page, knownTotal };
+  const client = typeof options.client === "string" && options.client !== "" ? options.client : null;
+  const req: RecordsRequest = { meta, sort, dir, search, page: options.page, knownTotal, client };
 
   const wantsFirstPage = !search && Number.isSafeInteger(options.page) && options.page === 1;
   if (!wantsFirstPage) return loadRecordsPage(req);
@@ -1229,6 +1336,21 @@ export interface RecordsAfterPage {
  * in id order, at most `limit` (1..1000), no OFFSET and no COUNT. Returns
  * null for an unknown dataset. Uncached on purpose (the API sits behind a CDN
  * cache header; a cursor space is unbounded).
+ *
+ * A cursor is only meaningful inside one generation of the dataset's rows. A sync
+ * that changes a dataset deletes ALL its rows and inserts new ones, and
+ * `DatasetRecord.id` is a BIGSERIAL, so the new rows get ids above every old one and
+ * an old id is never reused. A reader holding an old `after` would therefore get the
+ * whole new copy from its first row (a duplicated prefix under new ids, or a mixed old/new
+ * dataset) with nothing to say so. Hence the check: the row `id = after` must still exist
+ * in THIS dataset, else `StaleCursorError` (the route answers 409; the CSV stream errors).
+ * `after` absent or 0 means "from the start" and is never stale.
+ *
+ * The check and the page are ONE statement, so they read one snapshot: a sync cannot commit
+ * between "the cursor is valid" and "here are the rows after it". (Reading a generation from
+ * `getRecordsMeta` instead would not do: that entry is cached and lags a sync.) Not wrapped
+ * in a transaction on purpose: a long REPEATABLE READ held for a slow download would pin
+ * a connection and a snapshot.
  */
 export async function getDatasetRecordsAfter(options: {
   datasetId: string;
@@ -1238,13 +1360,39 @@ export async function getDatasetRecordsAfter(options: {
   const meta = await getRecordsMeta(options.datasetId);
   if (!meta) return null;
   const limit = Number.isSafeInteger(options.limit) ? Math.min(Math.max(options.limit as number, 1), 1000) : 100;
-  const after = typeof options.after === "string" && /^\d{1,18}$/.test(options.after) ? BigInt(options.after) : null;
-  const afterCondition = after !== null ? Prisma.sql` AND r.id > ${after}` : Prisma.empty;
-  const rows = await prisma.$queryRaw<RecordRow[]>(Prisma.sql`
-    SELECT r.id, r.data FROM "DatasetRecord" r
-    WHERE ${inDataset(meta.id)}${afterCondition}
-    ORDER BY r."datasetId", r.id
-    LIMIT ${limit + 1}`);
+  const parsed = typeof options.after === "string" && /^\d{1,18}$/.test(options.after) ? BigInt(options.after) : null;
+  const after = parsed !== null && parsed > BigInt(0) ? parsed : null;
+
+  let rows: RecordRow[];
+  if (after === null) {
+    rows = await prisma.$queryRaw<RecordRow[]>(Prisma.sql`
+      SELECT r.id, r.data FROM "DatasetRecord" r
+      WHERE ${inDataset(meta.id)}
+      ORDER BY r."datasetId", r.id
+      LIMIT ${limit + 1}`);
+  } else {
+    // LEFT JOIN LATERAL keeps exactly one row (with a NULL id) when the page is empty, so the
+    // cursor verdict still comes back at the end of the data. `cursor_check.ok` also short-circuits the
+    // page scan when the cursor is stale.
+    const joined = await prisma.$queryRaw<Array<{ cursorOk: boolean; id: bigint | null; data: unknown }>>(Prisma.sql`
+      WITH cursor_check AS (
+        SELECT EXISTS (
+          SELECT 1 FROM "DatasetRecord" c WHERE c.id = ${after} AND c."datasetId" = ${meta.id}
+        ) AS ok
+      )
+      SELECT cursor_check.ok AS "cursorOk", page.id, page.data
+      FROM cursor_check
+      LEFT JOIN LATERAL (
+        SELECT r.id, r.data FROM "DatasetRecord" r
+        WHERE ${inDataset(meta.id)} AND r.id > ${after} AND cursor_check.ok
+        ORDER BY r."datasetId", r.id
+        LIMIT ${limit + 1}
+      ) page ON true
+      ORDER BY page.id`);
+    if (joined.length === 0 || !joined[0].cursorOk) throw new StaleCursorError();
+    rows = joined.flatMap((r) => (r.id === null ? [] : [{ id: r.id, data: r.data }]));
+  }
+
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
   return {
