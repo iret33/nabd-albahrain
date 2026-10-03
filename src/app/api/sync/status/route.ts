@@ -15,7 +15,7 @@ import { isSyncRequestAuthorized } from "@/lib/sync/auth";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  if (!isSyncRequestAuthorized(req)) {
+  if (!(await isSyncRequestAuthorized(req))) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

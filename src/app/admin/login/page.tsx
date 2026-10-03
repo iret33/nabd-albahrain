@@ -39,7 +39,9 @@ export default async function AdminLoginPage({ searchParams }: Props) {
 
           {error && (
             <p role="alert" className="rounded-lg bg-coral/10 px-3.5 py-2.5 text-sm font-medium text-coral">
-              الرمز غير صحيح. حاول مرة أخرى.
+              {error === "rate"
+                ? "محاولات خاطئة كثيرة. انتظر نحو 15 دقيقة ثم حاول مرة أخرى."
+                : "الرمز غير صحيح. حاول مرة أخرى."}
             </p>
           )}
 

@@ -61,7 +61,7 @@ function parseForce(searchParams: URLSearchParams): boolean {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isSyncRequestAuthorized(req)) {
+  if (!(await isSyncRequestAuthorized(req))) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
