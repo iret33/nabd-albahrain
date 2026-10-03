@@ -1,4 +1,7 @@
 import type { Metadata } from "next";
+import { InsecureContextNotice } from "@/components/admin/insecure-context-notice";
+import { adminCookieOptions } from "@/lib/admin-session";
+import { loginErrorMessage } from "@/lib/admin/login-errors";
 import { loginAction } from "./actions";
 
 export const metadata: Metadata = {
@@ -7,11 +10,12 @@ export const metadata: Metadata = {
 };
 
 interface Props {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string | string[] }>;
 }
 
 export default async function AdminLoginPage({ searchParams }: Props) {
   const { error } = await searchParams;
+  const errorMessage = loginErrorMessage(error);
 
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-4 py-16 sm:px-6">
@@ -20,6 +24,9 @@ export default async function AdminLoginPage({ searchParams }: Props) {
         <p className="mt-2 text-sm leading-6 text-ink/60">
           هذه الصفحة مخصصة لإدارة مشروع نبض البحرين. أدخل رمز الدخول للمتابعة.
         </p>
+
+        {/* Production sessions use a Secure cookie that http cannot store: warn before the token is typed. */}
+        <InsecureContextNotice required={adminCookieOptions().secure} />
 
         <form action={loginAction} className="mt-6 space-y-4">
           <div>
@@ -37,11 +44,9 @@ export default async function AdminLoginPage({ searchParams }: Props) {
             />
           </div>
 
-          {error && (
+          {errorMessage && (
             <p role="alert" className="rounded-lg bg-coral/10 px-3.5 py-2.5 text-sm font-medium text-coral">
-              {error === "rate"
-                ? "محاولات خاطئة كثيرة. انتظر نحو 15 دقيقة ثم حاول مرة أخرى."
-                : "الرمز غير صحيح. حاول مرة أخرى."}
+              {errorMessage}
             </p>
           )}
 

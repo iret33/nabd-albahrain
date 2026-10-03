@@ -23,6 +23,9 @@
 
 type Env = Record<string, string | undefined>;
 
+/** Anything with `get` — `Headers`, `NextRequest.headers`, or the read-only bag `next/headers` returns. */
+export type HeaderBag = Pick<Headers, "get">;
+
 /** First value of a possibly comma-separated (proxy-appended) header, trimmed; null when empty. */
 export function firstHeaderValue(value: string | null | undefined): string | null {
   const first = value?.split(",")[0]?.trim();
@@ -102,7 +105,7 @@ function trustProxy(env: Env): boolean {
 }
 
 /** The host the visitor addressed: X-Forwarded-Host (TRUST_PROXY=1 only), then Host. Null when neither parses. */
-export function requestedHost(headers: Headers, env: Env = process.env): ParsedHost | null {
+export function requestedHost(headers: HeaderBag, env: Env = process.env): ParsedHost | null {
   if (trustProxy(env)) {
     const forwarded = parseHostHeader(firstHeaderValue(headers.get("x-forwarded-host")));
     if (forwarded) return forwarded;
@@ -111,7 +114,7 @@ export function requestedHost(headers: Headers, env: Env = process.env): ParsedH
 }
 
 /** `http` / `https` from X-Forwarded-Proto (TRUST_PROXY=1 only); null when absent, untrusted or unrecognised. */
-export function forwardedProto(headers: Headers, env: Env = process.env): "http" | "https" | null {
+export function forwardedProto(headers: HeaderBag, env: Env = process.env): "http" | "https" | null {
   if (!trustProxy(env)) return null;
   const proto = firstHeaderValue(headers.get("x-forwarded-proto"))?.toLowerCase();
   return proto === "http" || proto === "https" ? proto : null;
@@ -123,7 +126,7 @@ export function forwardedProto(headers: Headers, env: Env = process.env): "http"
  * when the headers give nothing usable, so a malformed Host can never turn the
  * redirect into a thrown `Invalid URL`.
  */
-export function requestOrigin(headers: Headers, fallbackUrl: string | URL, env: Env = process.env): string {
+export function requestOrigin(headers: HeaderBag, fallbackUrl: string | URL, env: Env = process.env): string {
   const fallback = new URL(fallbackUrl);
   const host = requestedHost(headers, env);
   if (!host) return fallback.origin;
@@ -138,7 +141,7 @@ export function requestOrigin(headers: Headers, fallbackUrl: string | URL, env: 
  * X-Forwarded-Proto is NOT evidence (a proxy that terminates TLS but does not
  * forward the header would otherwise lock every production login out).
  */
-export function isInsecureLoginRequest(headers: Headers, env: Env = process.env): boolean {
+export function isInsecureLoginRequest(headers: HeaderBag, env: Env = process.env): boolean {
   if (forwardedProto(headers, env) !== "http") return false;
   const host = requestedHost(headers, env);
   return host !== null && !isLoopbackHostname(host.hostname);
