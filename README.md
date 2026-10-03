@@ -384,7 +384,7 @@ bucket (and a few bad logins lock everyone out). Only `CF-Connecting-IP` is used
 fails to send it, everyone falls back to the shared bucket (a safe, but disruptive, failure with no
 warning for that case). **Add Cloudflare WAF rate-limit rules**, because the app's own limiter cannot
 stop a flat-out flood (each refused request still costs ~1.3 ms of the single Node thread, enough to
-push `/` to ~2 s p50 at ~560 req/s): `/admin/login` and `/api/sync*` (e.g. 10 requests/minute/IP),
+push `/` to ~2 s p50 at ~560 req/s; measured during the build, not re-measured here): `/admin/login` and `/api/sync*` (e.g. 10 requests/minute/IP),
 `starts_with(http.request.uri.path, "/api/v1/")` (and a lower threshold where `format=csv`), and
 `/api/refresh`. Optionally a Cache Rule "eligible for cache, respect origin" scoped to `/api/v1/*`
 only (HTML must stay uncached).
@@ -393,7 +393,7 @@ only (HTML must stay uncached).
 
 - **Admin needs HTTPS or loopback.** In production the cookie is `Secure` + `__Host-`, which browsers
   refuse to store over plain http; the login says so instead of half-logging in. Use the tunnel's https
-  hostname, or `http://127.0.0.1` through an SSH tunnel. Safari also refuses on `http://localhost`.
+  hostname, or `http://127.0.0.1` through an SSH tunnel. Safari reportedly refuses on `http://localhost` too (untested).
 - **Upgrading a pre-freshness database.** The container applies the new migrations itself; existing rows
   are then "legacy" (no version token, no search text, no `derivedVersion`). One catalog pass repairs
   them: `docker compose run --rm app sync` (or the scheduler, which pulls a pass forward by itself on its
