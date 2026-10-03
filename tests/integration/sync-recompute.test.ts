@@ -103,7 +103,7 @@ describe.skipIf(!RUN_INTEGRATION)("recompute (integration: no network)", () => {
 
   it("--force recomputes datasets that are already current; --dataset narrows it", async () => {
     const r = await h.recompute.runRecompute({ trigger: "test", force: true });
-    expect(r.updated).toBe(9); // every 'ok' dataset with rows (empty-dataset has none)
+    expect(r.updated).toBe(10); // every 'ok' dataset, the zero-row one included (its lead sentence is derived text too)
 
     const one = await h.recompute.runRecompute({ trigger: "test", force: true, datasetId: "seaports" });
     expect(one.updated).toBe(1);
