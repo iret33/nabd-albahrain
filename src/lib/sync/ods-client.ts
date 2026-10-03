@@ -10,7 +10,9 @@ import {
   type CatalogDataset,
 } from "./schemas";
 
-const BASE_URL = "https://data.gov.bh/api/explore/v2.1";
+// Overridable so the whole sync pipeline can run offline against
+// scripts/mock-ods.mjs (see README "Offline development").
+const BASE_URL = (process.env.ODS_BASE_URL ?? "https://data.gov.bh/api/explore/v2.1").replace(/\/+$/, "");
 const CATALOG_PAGE_SIZE = 100;
 
 /**

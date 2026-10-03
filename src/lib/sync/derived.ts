@@ -37,6 +37,14 @@ import type { CatalogField } from "./schemas";
 // Public types
 // ---------------------------------------------------------------------------
 
+/**
+ * Version of the derivation logic. Bump whenever a change to this file alters
+ * the persisted statsJson/vizConfig/chartData/summaryAr for the same input.
+ * `Dataset.derivedVersion` records which version produced a row; rows with an
+ * older version are re-derived from their stored records (no network).
+ */
+export const DERIVED_VERSION = 2;
+
 export interface FieldStats {
   name: string;
   label: string;

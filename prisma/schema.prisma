@@ -42,10 +42,40 @@ model Dataset {
   syncStatus     String    @default("pending") // pending | ok | partial | error
   syncError      String?
 
+  // --- Change detection / freshness (migration 20261003000000_freshness_and_search) ---
+  /// Opaque version string of the catalog entry the stored data was synced
+  /// from (see computeSourceVersion in src/lib/sync). Compared against the
+  /// freshly-fetched catalog entry to decide "did the portal publish new
+  /// data?" without comparing clocks.
+  syncedVersion String?
+  /// Last time the catalog was consulted for this dataset, whether or not
+  /// anything changed ("last checked" in the UI).
+  lastCheckedAt DateTime?
+  /// Per-dataset cooldown anchor for the public "refresh this dataset" button.
+  refreshRequestedAt DateTime?
+  /// Set when a complete catalog pass no longer contains this dataset.
+  /// Public queries filter `removedAt: null`; the dataset page still renders
+  /// removed rows with a banner. Cleared if the id reappears.
+  removedAt DateTime?
+  /// DERIVED_VERSION (src/lib/sync/derived.ts) the statsJson/vizConfig/
+  /// chartData/summaryAr columns were computed with. Null = pre-versioning.
+  derivedVersion Int?
+
+  // --- Portal-provided Arabic/discovery metadata ---
+  titleAr  String?
+  keywords String[] @default([])
+  license  String?
+  /// normalizeSearch(title + titleAr + publisher + theme + keywords +
+  /// description), see src/lib/search.ts. GIN trigram indexed.
+  searchText String @default("")
+
   records DatasetRecord[]
 
   @@index([theme])
   @@index([syncStatus])
+  @@index([removedAt])
+  @@index([publisher])
+  @@index([sourceModified])
 }
 
 /// One row per record inside a dataset's export. Bulk-replaced on every
@@ -56,25 +86,59 @@ model DatasetRecord {
   data      Json
   dataset   Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
 
-  @@index([datasetId])
+  @@index([datasetId, id])
 }
 
 /// Audit trail: one row per full sync run.
 model SyncLog {
   id           Int       @id @default(autoincrement())
-  trigger      String // "cli" | "api" | ...
+  trigger      String // "cli" | "api" | "auto" | "public" | ...
   startedAt    DateTime  @default(now())
   finishedAt   DateTime?
   processed    Int       @default(0)
-  succeeded    Int       @default(0)
+  succeeded    Int       @default(0) // includes skipped (unchanged) datasets
   failed       Int       @default(0)
   failuresJson Json? // [{ datasetId, error }]
+
+  /// Row is created when the run starts (status "running") and finalized in
+  /// a finally block, so crashed/failed runs are recorded too.
+  status String @default("running") // running | success | partial | failed | aborted
+  error  String? // top-level failure message (sanitized)
+  /// Datasets in scope for this run (for live progress: processed/total).
+  total   Int @default(0)
+  /// Datasets left untouched because nothing changed upstream.
+  skipped Int @default(0)
+  /// Datasets whose records were actually re-downloaded and re-derived.
+  updated Int @default(0)
+  /// "all" | "changed" | "dataset:<id>" | "recompute"
+  scope String?
+  /// { updated: string[], deferred: string[], removed: string[], added: string[] }
+  changedJson Json?
+}
+
+/// Singleton row (id always 1): portal-wide freshness bookkeeping.
+model SyncState {
+  id Int @id @default(1)
+  /// Last time a complete catalog pass succeeded (even if nothing changed).
+  lastCatalogCheckAt DateTime?
+  /// Last time a run finished with status success/partial.
+  lastSuccessAt DateTime?
+  /// Last time any dataset's data actually changed (a dataset was re-synced).
+  lastDataChangeAt DateTime?
+  /// Cooldown anchor for the public catalog-wide refresh.
+  lastPublicRefreshAt DateTime?
 }
 
 /// Singleton row (id always 1) used as a mutex so only one sync runs at a
-/// time. A `since` older than 2 hours is treated as stale and auto-released.
+/// time. A lock whose heartbeat (or `since`) is older than ~10 minutes is
+/// treated as stale and may be taken over.
 model SyncLock {
   id      Int       @id @default(1)
   running Boolean   @default(false)
   since   DateTime?
+  /// Random token of the run that owns the lock; release only matches it.
+  holder String?
+  /// Refreshed every ~30s by the running sync; the lock is stale when this
+  /// (or `since` when null) is older than ~10 minutes.
+  heartbeatAt DateTime?
 }

@@ -5,3 +5,8 @@ allowBuilds:
   prisma: true
   sharp: true
   unrs-resolver: true
+# Security overrides for transitive deps nested under Next.js (build-time only
+# paths; remove once Next bumps them itself).
+overrides:
+  postcss: '>=8.5.23'
+  nanoid: '>=3.3.18'
