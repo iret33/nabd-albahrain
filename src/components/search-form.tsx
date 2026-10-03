@@ -4,7 +4,9 @@ import { MAX_QUERY_LENGTH } from "@/lib/list-query";
 type Size = "sm" | "md" | "lg";
 
 const INPUT_CLASS: Record<Size, string> = {
-  sm: "h-11 pe-12 ps-4 text-sm",
+  // 16px below `sm` and on touch screens (iOS zooms the page on focusing a smaller control); 14px for a mouse
+  // at `sm` and up keeps the header search compact and its placeholder whole.
+  sm: "h-11 pe-12 ps-4 text-base sm:text-sm pointer-coarse:text-base",
   md: "h-12 pe-14 ps-5 text-base",
   lg: "h-14 pe-16 ps-6 text-base sm:text-lg",
 };

@@ -169,5 +169,7 @@ export function ListingResults({
  * (mirrored quotes) and could be split from them across a line break.
  */
 export function QueryText({ q }: { q: string }) {
-  return <Bidi text={`«${q}»`} />;
+  // `anywhere`: the query is up to 100 characters of whatever was typed or pasted (a URL has no break point), and
+  // this renders inside the page h1, the filter chip and the empty-state sentence.
+  return <Bidi text={`«${q}»`} className="[overflow-wrap:anywhere]" />;
 }

@@ -19,8 +19,14 @@ export const SINCE_LABELS: Record<ListSince, string> = {
   "1y": "آخر سنة",
 };
 
+/**
+ * 16px on phones and on any touch screen (`pointer-coarse`, which also covers a rotated phone and a tablet
+ * wider than `sm`): iOS Safari zooms the page when a control with a smaller font gets focus and leaves it
+ * zoomed. 14px only for a mouse at `sm` and up. (`maximum-scale=1` would stop the zoom too, but at the price
+ * of pinch-zoom for low-vision users.)
+ */
 const FIELD =
-  "h-11 w-full rounded-xl border border-ink/55 bg-white px-3 text-sm text-ink";
+  "h-11 w-full rounded-xl border border-ink/55 bg-white px-3 text-base text-ink sm:text-sm pointer-coarse:text-base";
 
 function Field({ label, htmlFor, className = "", children }: { label: string; htmlFor: string; className?: string; children: ReactNode }) {
   return (
@@ -239,9 +245,10 @@ export function ActiveFilterChips({
           <Link
             href={removeFilterHref(basePath, params, f.key, omit)}
             aria-label={`إزالة عامل التصفية: ${plain(f)}`}
-            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-ink/55 bg-white px-3.5 text-sm font-medium text-ink transition-colors hover:border-coral hover:text-coral"
+            className="inline-flex min-h-10 max-w-full min-w-0 items-center gap-2 rounded-full border border-ink/55 bg-white px-3.5 py-1.5 text-sm font-medium text-ink transition-colors hover:border-coral hover:text-coral"
           >
-            <span>{describe(f)}</span>
+            {/* The text span is the flex item that must be allowed to shrink and break (a pasted URL as the query). */}
+            <span className="min-w-0 [overflow-wrap:anywhere]">{describe(f)}</span>
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
               <path d="M4 4l8 8M12 4l-8 8" />
             </svg>
