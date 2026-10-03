@@ -17,7 +17,7 @@ import { SITE_DESCRIPTION, SITE_NAME, alternatesFor, jsonLd, openGraphFor, websi
 import { featuredEntries } from "@/config/featured";
 import { HeroStatBand } from "@/components/hero-stat-band";
 import { FreshnessLine } from "@/components/freshness-line";
-import { RefreshButton } from "@/components/refresh-button";
+import { RefreshControl } from "@/components/refresh-control";
 import { SearchForm } from "@/components/search-form";
 import { PearlLattice } from "@/components/pearl-lattice";
 import { NumberLatin } from "@/components/number-latin";
@@ -194,18 +194,18 @@ export default async function Home() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(websiteJsonLd()) }} />
 
       <section className="surface-dark bg-sea-900 text-sand-50">
-        <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
+        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-20">
           <p className="font-display text-sm font-bold tracking-wide text-pearl">لوحة بيانات مستقلة</p>
           <h1 className="mt-3 max-w-2xl font-display text-3xl font-black leading-tight sm:text-5xl">
             نبض البحرين
           </h1>
-          <p className="mt-4 max-w-xl text-base text-sand-100/85 sm:text-lg">
+          <p className="mt-3 max-w-xl text-sm text-sand-100/85 sm:mt-4 sm:text-lg">
             لوحة بيانات عربية مستقلة تعرض بصريًا كل مجموعات البيانات المفتوحة في بوابة
             data.gov.bh الرسمية لمملكة البحرين — من الاقتصاد والصحة إلى البيئة والسياحة، في
             مكان واحد.
           </p>
 
-          <SearchForm size="lg" className="mt-8 max-w-xl" label="ابحث في مجموعات البيانات" />
+          <SearchForm size="lg" className="mt-8 hidden max-w-xl sm:block" label="ابحث في مجموعات البيانات" />
 
           {isEmpty ? (
             <div className="mt-10 rounded-2xl border border-line-dark bg-sea-800/60 px-6 py-8 text-center">
@@ -214,7 +214,7 @@ export default async function Home() {
                 لم تُستورد أي بيانات من data.gov.bh حتى الآن. اضغط «تحديث البيانات» لجلب أول
                 نسخة من المصدر، أو شغّل محرك المزامنة.
               </p>
-              <RefreshButton variant="hero" className="mt-5" />
+              <RefreshControl variant="hero" className="mt-5 print:hidden" />
             </div>
           ) : (
             <HeroStatBand
@@ -233,7 +233,7 @@ export default async function Home() {
                     ]}
                     notice={notice}
                   />
-                  <RefreshButton variant="hero" />
+                  <RefreshControl variant="hero" className="print:hidden" />
                 </>
               }
             />

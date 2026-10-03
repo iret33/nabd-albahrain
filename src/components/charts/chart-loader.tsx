@@ -99,6 +99,15 @@ export function ChartLoader({
         style={size.height ? { height: size.height } : undefined}
       >
         <LazyChart vizConfig={vizConfig} chartData={chartData} color={color} hidden={hidden} title={title} />
+        {/* Only without JavaScript: the picture needs it, the numbers do not (the table below is server-rendered). */}
+        <noscript>
+          <p
+            dir="rtl"
+            className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm leading-7 text-ink/80"
+          >
+            يتطلب الرسم البياني تفعيل JavaScript — بياناته كاملة في «عرض بيانات الرسم كجدول» أدناه.
+          </p>
+        </noscript>
         {unit && VERTICAL_VALUE_AXIS.has(vizConfig.type) && (
           <span
             dir="rtl"

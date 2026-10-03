@@ -7,7 +7,7 @@ import { listingMetadata } from "@/lib/seo";
 import { FreshnessLine } from "@/components/freshness-line";
 import { NumberLatin } from "@/components/number-latin";
 import { PearlLattice } from "@/components/pearl-lattice";
-import { RefreshButton } from "@/components/refresh-button";
+import { RefreshControl } from "@/components/refresh-control";
 
 export const metadata = listingMetadata({
   title: "عن المشروع",
@@ -82,7 +82,7 @@ export default async function AboutPage() {
               ]}
               notice={notice}
             />
-            <RefreshButton variant="inline" />
+            <RefreshControl variant="inline" className="print:hidden" />
           </div>
         </section>
 

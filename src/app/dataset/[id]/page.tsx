@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
@@ -13,7 +12,7 @@ import {
 import type { StatsJson } from "@/lib/sync/derived";
 import type { CatalogField } from "@/lib/sync/schemas";
 import { themeColor } from "@/lib/theme-colors";
-import { altTitle, displayTitle, stripHtml } from "@/lib/format";
+import { altTitle, displayTitle, formatDateTimeAr, stripHtml } from "@/lib/format";
 import { slugify } from "@/lib/slugify";
 import { SITE_URL } from "@/lib/site";
 import { buildBreadcrumbJsonLd, buildDatasetJsonLd, jsonLdScript, truncateOnWord } from "@/lib/jsonld";
@@ -25,11 +24,13 @@ import {
   parseRecordsParams,
   type RecordsParams,
 } from "@/lib/dataset-page";
+import { NOUNS } from "@/lib/arabic-count";
 import { Breadcrumb } from "@/components/breadcrumb";
+import { CountNoun } from "@/components/count-noun";
 import { NumberLatin } from "@/components/number-latin";
-import { ArabicTextWithNumbers } from "@/components/arabic-text-with-numbers";
+import { MixedBidiText } from "@/components/bidi";
 import { FreshnessLine } from "@/components/freshness-line";
-import { RefreshButton } from "@/components/refresh-button";
+import { RefreshControl } from "@/components/refresh-control";
 import { StatChip } from "@/components/stat-chip";
 import { RemovedBanner } from "@/components/removed-banner";
 import { DatasetDescription } from "@/components/dataset-description";
@@ -39,7 +40,6 @@ import { RelatedDatasets } from "@/components/related-datasets";
 import { ChartFigure } from "@/components/charts/chart-figure";
 import { RecordsTable } from "@/components/records-table";
 import { EmptyState } from "@/components/empty-state";
-import { RecordsTableSkeleton } from "@/components/skeletons";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -92,13 +92,18 @@ const downloadLinkClass =
   "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line-light bg-white px-4 py-2.5 text-sm font-medium text-ink/80 shadow-sm transition-colors hover:border-coral hover:text-coral";
 
 /**
- * The records table lives in its own async component wrapped in
- * <Suspense> further down, rather than being awaited directly in
- * DatasetPage. It's the same data either way — this only exists so the
- * (comparatively slower, raw-SQL) sorted/searched-records query can stream in
- * after the header/chart, without moving the `notFound()` check behind a
- * Suspense boundary (see the note on DatasetDetailSkeleton in
- * components/skeletons.tsx for why that matters).
+ * The records table, awaited in place (no <Suspense>). Streamed content sits in
+ * a hidden template until an inline script reveals it, so in a browser without
+ * JavaScript a Suspense boundary would leave the table (and its search, sort
+ * links and pager, which are all plain GET links and a GET form) a permanent
+ * skeleton. The `notFound()` check in DatasetPage runs before this renders, so
+ * a missing dataset keeps its real 404 status either way. The queries behind it
+ * are cached for page 1 and time-capped otherwise (`RECORDS_STATEMENT_TIMEOUT_MS`).
+ *
+ * It is its own component, and a sibling of RelatedDatasets in the page, so the
+ * two queries still run concurrently rather than one after the other. A failed
+ * read costs this section only, with a notice: an exception escaping here would
+ * replace the whole page with the error boundary.
  */
 async function RecordsSection({
   datasetId,
@@ -116,15 +121,24 @@ async function RecordsSection({
   fields: CatalogField[];
   stats: StatsJson | null;
 }) {
-  const recordsPage = await getDatasetRecordsPage({
-    datasetId,
-    page: view.page,
-    sort: view.sort,
-    dir: view.dir,
-    rq: view.rq,
-    total,
-  });
-  return <RecordsTable datasetId={datasetId} title={title} fields={fields} stats={stats} page={recordsPage} />;
+  try {
+    const recordsPage = await getDatasetRecordsPage({
+      datasetId,
+      page: view.page,
+      sort: view.sort,
+      dir: view.dir,
+      rq: view.rq,
+      total,
+    });
+    return <RecordsTable datasetId={datasetId} title={title} fields={fields} stats={stats} page={recordsPage} />;
+  } catch (err) {
+    console.error(`[dataset page] records unavailable for ${datasetId}:`, err);
+    return (
+      <p role="status" className="rounded-xl border border-coral/40 bg-coral/5 px-4 py-3 text-sm leading-7 text-ink/80">
+        تعذّر تحميل السجلات الآن. حدّث الصفحة بعد قليل، أو نزّل البيانات كاملة من المصدر الرسمي أعلاه.
+      </p>
+    );
+  }
 }
 
 function NoChartNote({ reason }: { reason: "geo" | "no-viz" | "none" }) {
@@ -262,7 +276,7 @@ export default async function DatasetPage({ params, searchParams }: Props) {
 
         {dataset.summaryAr && (
           <p className="mt-4 max-w-3xl text-lg leading-8 text-ink/80">
-            <ArabicTextWithNumbers text={dataset.summaryAr} />
+            <MixedBidiText text={dataset.summaryAr} />
           </p>
         )}
 
@@ -277,8 +291,22 @@ export default async function DatasetPage({ params, searchParams }: Props) {
               ...(removed ? [] : [{ label: "آخر تحقق من المصدر", iso: dataset.lastCheckedAt?.toISOString() }]),
             ]}
           />
-          {!removed && <RefreshButton scope="dataset" datasetId={id} variant="inline" />}
+          {!removed && (
+            <div className="print:hidden">
+              <RefreshControl scope="dataset" datasetId={id} variant="inline" />
+            </div>
+          )}
         </div>
+
+        {/* On paper only: where this page lives and how old its data is. Relative times ("منذ ساعة") mean nothing on a printout. */}
+        <p className="mt-3 hidden text-xs leading-6 text-ink/80 print:block">
+          نبض البحرين:{" "}
+          <span dir="ltr" className="tabular-figures">
+            {`${SITE_URL}/dataset/${encodeURIComponent(id)}`}
+          </span>
+          {dataset.sourceModified && <> — آخر تعديل بالمصدر: {formatDateTimeAr(dataset.sourceModified)}</>}
+          {dataset.lastSyncedAt && <> — آخر مزامنة: {formatDateTimeAr(dataset.lastSyncedAt)}</>}
+        </p>
       </header>
 
       <section aria-labelledby="chart-heading" className="mt-8">
@@ -313,7 +341,8 @@ export default async function DatasetPage({ params, searchParams }: Props) {
             note={
               partial && dataset.recordsCount > dataset.sourceCount ? (
                 <>
-                  عُرض <NumberLatin value={dataset.sourceCount} /> من <NumberLatin value={dataset.recordsCount} /> سجل
+                  عُرض <CountNoun n={dataset.sourceCount} forms={NOUNS.record} /> من أصل{" "}
+                  <NumberLatin value={dataset.recordsCount} />
                 </>
               ) : undefined
             }
@@ -357,7 +386,7 @@ export default async function DatasetPage({ params, searchParams }: Props) {
           </div>
         )}
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center gap-3 print:hidden">
           {!removed && (
             <>
               <a href={csvUrl} target="_blank" rel="noopener noreferrer" className={downloadLinkClass}>
@@ -383,23 +412,19 @@ export default async function DatasetPage({ params, searchParams }: Props) {
             البيانات
           </h2>
           <div className="mt-4">
-            <Suspense fallback={<RecordsTableSkeleton />}>
-              <RecordsSection
-                datasetId={id}
-                title={title}
-                total={dataset.sourceCount}
-                view={view}
-                fields={fields}
-                stats={stats}
-              />
-            </Suspense>
+            <RecordsSection
+              datasetId={id}
+              title={title}
+              total={dataset.sourceCount}
+              view={view}
+              fields={fields}
+              stats={stats}
+            />
           </div>
         </section>
       )}
 
-      <Suspense fallback={null}>
-        <RelatedDatasets id={id} theme={dataset.theme} publisher={dataset.publisher} />
-      </Suspense>
+      <RelatedDatasets id={id} theme={dataset.theme} publisher={dataset.publisher} />
 
       <p className="mt-12 border-t border-line-light pt-6 text-xs leading-6 text-ink/70">
         المصدر:{" "}
@@ -414,6 +439,12 @@ export default async function DatasetPage({ params, searchParams }: Props) {
           >
             صفحة هذه المجموعة على data.gov.bh
           </a>
+        )}
+        {!removed && (
+          <span dir="ltr" className="hidden print:inline">
+            {" "}
+            ({officialPageUrl})
+          </span>
         )}{" "}
         — مشروع نبض البحرين مستقل وغير رسمي.
       </p>

@@ -1,8 +1,21 @@
 /**
- * Loading skeletons, in the site's visual voice (RTL, sand/white cards,
- * rounded-2xl, pearl-ish neutral blocks) — used by the route segments'
- * loading.tsx files. `animate-pulse` respects prefers-reduced-motion via
- * the global CSS override in globals.css.
+ * Loading skeleton blocks, in the site's visual voice (sand/white cards,
+ * rounded-2xl, neutral blocks). `animate-pulse` respects prefers-reduced-motion
+ * via the global CSS override in globals.css.
+ *
+ * Nothing in the public site streams behind a skeleton any more, on purpose:
+ *  - Streamed content (a route-level `loading.tsx`, or an inline <Suspense>)
+ *    arrives in a hidden template that an inline script reveals, so a browser
+ *    without JavaScript kept the skeleton for good: an empty home page, a
+ *    dataset page without its records table (R5-01). The data layer is cached
+ *    and answers in tens of milliseconds, so streaming bought nothing.
+ *  - A `loading.tsx` around `dataset/[id]` would also commit an HTTP 200 before
+ *    `notFound()` could run, so a missing dataset would stop returning a 404.
+ * Pages therefore await their data in place. Do not reintroduce a skeleton
+ * boundary on a route that must read without JavaScript.
+ *
+ * The two exports left are what `src/app/updates/loading.tsx` still imports;
+ * that file and these blocks go together once the updates page awaits in place.
  */
 
 function Block({ className = "" }: { className?: string }) {
@@ -33,81 +46,4 @@ export function CardGridSkeleton({ count = 9 }: { count?: number }) {
       ))}
     </div>
   );
-}
-
-export function ThemeTileSkeleton() {
-  return (
-    <div className="rounded-2xl border border-line-light bg-white p-6">
-      <Block className="mb-4 h-10 w-10 rounded-full" />
-      <Block className="h-5 w-2/3" />
-      <Block className="mt-2 h-3 w-1/3" />
-    </div>
-  );
-}
-
-export function ThemeTileGridSkeleton({ count = 12 }: { count?: number }) {
-  return (
-    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-      {Array.from({ length: count }, (_, i) => (
-        <ThemeTileSkeleton key={i} />
-      ))}
-    </div>
-  );
-}
-
-export function HeroStatBandSkeleton() {
-  return (
-    <div className="mt-10 flex flex-wrap gap-x-8 gap-y-6 border-t border-line-dark pt-8">
-      {Array.from({ length: 3 }, (_, i) => (
-        <div key={i}>
-          <Block className="h-3 w-20 bg-sand-100/20" />
-          <Block className="mt-2 h-8 w-16 bg-sand-100/20" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * Full dataset-detail page shape. Kept for reference/reuse, but
- * deliberately NOT wired as `dataset/[id]/loading.tsx`: a route-level
- * `loading.tsx` wraps the whole page (including the `notFound()` check) in
- * a Suspense boundary, which makes Next.js commit an HTTP 200 status
- * before the not-found decision is known — confirmed empirically during
- * Phase 4 (a missing dataset id returned 200 with the not-found.tsx body
- * instead of a real 404 status). Since a correct 404 status matters more
- * than a route-level skeleton here, the dataset page instead renders its
- * header/chart/stats synchronously (fast — cached queries) and only wraps
- * the records table in an inline <Suspense> using `RecordsTableSkeleton`
- * below, which streams safely because it's *after* the notFound() check
- * has already resolved.
- */
-export function DatasetDetailSkeleton() {
-  return (
-    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <Block className="h-4 w-40" />
-      <Block className="mt-4 h-9 w-3/4" />
-      <Block className="mt-3 h-5 w-full" />
-      <Block className="mt-1 h-5 w-2/3" />
-
-      <div className="mt-8 rounded-2xl border border-line-light bg-white p-6 shadow-sm">
-        <Block className="h-72 w-full sm:h-80" />
-      </div>
-
-      <div className="mt-6 flex flex-wrap gap-3">
-        {Array.from({ length: 4 }, (_, i) => (
-          <Block key={i} className="h-16 w-36" />
-        ))}
-      </div>
-
-      <div className="mt-10">
-        <RecordsTableSkeleton />
-      </div>
-    </div>
-  );
-}
-
-/** Just the table block itself — used as the inline Suspense fallback for the records section. */
-export function RecordsTableSkeleton() {
-  return <Block className="h-64 w-full rounded-2xl" />;
 }

@@ -3,7 +3,9 @@ import { themeColor } from "@/lib/theme-colors";
 import { altTitle, displayTitle, formatDateAr } from "@/lib/format";
 import { extractFeaturedMetric, looksTemporal } from "@/lib/chart-data";
 import { asVizConfig, asChartData, type DatasetCardRow } from "@/lib/queries";
+import { NOUNS } from "@/lib/arabic-count";
 import { Bidi } from "@/components/bidi";
+import { CountNoun } from "@/components/count-noun";
 import { NumberLatin } from "@/components/number-latin";
 import { Sparkline } from "@/components/charts/sparkline";
 
@@ -20,6 +22,8 @@ export type DatasetCardData = DatasetCardRow & { removedAt?: Date | string | nul
  *   English title muted underneath as `lang="en" dir="ltr"`; English-only
  *   datasets show their title alone. Publisher and theme are source-language
  *   text, so they go through `<Bidi>`.
+ * - Record count: the noun agrees with the number ("سجل واحد", "سجلان",
+ *   "6 سجلات", "11 سجلًا"; `CountNoun`), and an empty dataset says so in words.
  * - Date: when the SOURCE last modified the data ("عُدّلت ..."), not when this
  *   mirror synced it (after a full sync that is the same day for every card).
  *   Datasets without a source date fall back to the sync date, labelled as such.
@@ -56,7 +60,7 @@ export function DatasetCard({
 
   return (
     <article
-      className={`group relative flex flex-col rounded-2xl border border-line-light bg-white p-5 shadow-sm transition-all has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-sea-900 motion-safe:hover:-translate-y-[3px] hover:shadow-md ${className}`}
+      className={`group relative flex flex-col print:break-inside-avoid rounded-2xl border border-line-light bg-white p-5 shadow-sm transition-all has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-sea-900 motion-safe:hover:-translate-y-[3px] hover:shadow-md ${className}`}
     >
       {(dataset.theme || dataset.syncStatus === "partial" || removed) && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -116,13 +120,17 @@ export function DatasetCard({
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-dashed border-line-light pt-3 text-xs text-ink-muted">
         {showsStoredOfTotal ? (
           // A partial dataset stores only its first rows: say "50,000 of 12,345,678", not the portal's total alone.
+          // The noun agrees with the total (the second number), and follows "من", hence the oblique dual.
           <span>
-            <NumberLatin value={dataset.sourceCount} /> من <NumberLatin value={dataset.recordsCount} /> سجل
+            <NumberLatin value={dataset.sourceCount} /> من <CountNoun n={dataset.recordsCount} forms={NOUNS.record} oblique />
+          </span>
+        ) : dataset.recordsCount > 0 ? (
+          <span>
+            <CountNoun n={dataset.recordsCount} forms={NOUNS.record} />
           </span>
         ) : (
-          <span>
-            <NumberLatin value={dataset.recordsCount} /> سجل
-          </span>
+          // "0 سجلات" is not how an empty dataset reads.
+          <span>لا توجد سجلات</span>
         )}
         {dateValue ? (
           <span>

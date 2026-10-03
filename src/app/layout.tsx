@@ -80,6 +80,13 @@ export default function RootLayout({
           تخطَّ إلى المحتوى
         </a>
         <SiteHeader />
+        {/* On paper only, in place of the (hidden) header: whose page this is. */}
+        <p className="hidden border-b border-line-light pb-2 text-sm font-bold text-sea-900 print:block">
+          نبض البحرين — لوحة بيانات مستقلة غير رسمية لبوابة data.gov.bh ·{" "}
+          <span dir="ltr" className="font-normal">
+            {SITE_URL}
+          </span>
+        </p>
         {/* tabIndex -1: the skip link moves focus here; no outline on a programmatic focus target. */}
         <main id="main" tabIndex={-1} className="flex-1 focus:outline-none">
           {children}

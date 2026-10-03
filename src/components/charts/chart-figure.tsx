@@ -42,7 +42,7 @@ export function ChartFigure({
   const notes = parts.notes.filter((n) => n !== PARTIAL_NOTE);
 
   return (
-    <figure aria-labelledby="chart-caption" className="m-0 rounded-2xl border border-line-light bg-white p-4 shadow-sm sm:p-6">
+    <figure aria-labelledby="chart-caption" className="m-0 rounded-2xl border border-line-light bg-white p-4 shadow-sm print:break-inside-avoid sm:p-6">
       <figcaption id="chart-caption">
         <span dir="auto" className="block break-words font-display text-base font-bold leading-7 text-sea-900 sm:text-lg">
           {parts.title}

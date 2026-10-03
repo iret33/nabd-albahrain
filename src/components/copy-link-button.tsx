@@ -70,7 +70,7 @@ export function CopyLinkButton({ title, className = "" }: { title: string; class
   }
 
   return (
-    <span className={`inline-flex flex-wrap items-center gap-2 ${className}`}>
+    <span className={`inline-flex flex-wrap items-center gap-2 print:hidden ${className}`}>
       <button
         type="button"
         onClick={onClick}
