@@ -34,7 +34,12 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   // The app has no next/image usage and no remote image sources. Turning the
   // optimizer off removes the public /_next/image endpoint (a sharp/libvips
-  // attack surface that has had critical advisories) — it answers 404.
+  // attack surface that has had critical advisories) — it answers 404 BEFORE
+  // sharp is ever required. sharp still ships in node_modules as Next's optional
+  // dependency, and `pnpm audit --prod` lists high advisories for old versions
+  // of it; they are unreachable only because of this setting, so do not enable
+  // the optimizer without first bumping sharp (see the Dockerfile and CI audit
+  // notes). tests/security/headers.test.ts pins it.
   images: { unoptimized: true },
   async headers() {
     // Read at call time (not module load) so the policy follows the real

@@ -109,10 +109,12 @@ jobs:
       # High advisories are surfaced as a warning annotation on every run
       # instead of hiding behind the critical-only gate, but do not block
       # unrelated changes. Known and accepted today (all unreachable, see the
-      # note in the Dockerfile): sharp / libvips (Next's optional image
-      # optimizer, off via images.unoptimized so /_next/image is a 404) and
-      # deepmerge-ts (prisma's config loader; no prisma.config.ts, and Prisma 6
-      # has no fixed release). Anything NEW in this list needs a human look.
+      # note in the Dockerfile): sharp / libvips while the lockfile pins
+      # sharp < 0.35.4 (Next's optional image optimizer, off via
+      # images.unoptimized so /_next/image is a 404; `pnpm update sharp --depth
+      # Infinity` clears it) and deepmerge-ts (prisma's config loader; no
+      # prisma.config.ts, and Prisma 6 has no fixed release). Anything NEW in
+      # this list needs a human look.
       - name: Report high-severity advisories (non-blocking)
         run: |
           if ! pnpm audit --prod --audit-level=high; then
