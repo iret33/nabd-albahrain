@@ -16,7 +16,7 @@ import {
   Tooltip,
 } from "recharts";
 import type { VizConfig } from "@/lib/sync/derived";
-import { formatNumber } from "@/lib/format";
+import { formatCompactAr, formatNumber, formatPeriodLabelAr, formatPeriodTickAr, stripBidiMarks } from "@/lib/format";
 import {
   DOT_THRESHOLD,
   OTHER_LABEL,
@@ -32,6 +32,7 @@ import {
   valueAxisWidth,
   valueExtent,
   type SeriesSpec,
+  type ValueExtent,
 } from "@/lib/chart-model";
 
 /**
@@ -46,8 +47,10 @@ import {
  *    (otherwise only points that would be invisible, isolated between gaps).
  *  - A partial trailing period is drawn as a dashed twin series that starts at
  *    the last complete point.
- *  - Value axes use compact numbers ("1.5M") and are as wide as their longest
- *    tick; the legend (outside) decides which series are drawn.
+ *  - Value axes use compact Arabic numbers ("1.5 مليون", not "1.5M") and are as
+ *    wide as their longest tick; month periods are drawn as "سبتمبر 2022" (the
+ *    data keeps the ISO key "2022-09"); the legend (outside) decides which
+ *    series are drawn.
  *  - `accessibilityLayer` on every chart: the SVG becomes keyboard focusable and
  *    arrow keys step through the points, showing the tooltip. The data table
  *    under the chart is the full text alternative.
@@ -90,6 +93,7 @@ function RtlTooltip({ active, payload, label, unit }: RtlTooltipProps) {
   }
   const entries = Array.from(merged.values());
   if (entries.length === 0) return null;
+  const periodLabel = label === undefined ? "" : formatPeriodLabelAr(label);
 
   return (
     <div
@@ -100,8 +104,9 @@ function RtlTooltip({ active, payload, label, unit }: RtlTooltipProps) {
     >
       {label !== undefined && (
         <p className="mb-1 font-medium text-ink/80">
-          <span dir="ltr" className="tabular-figures">
-            {String(label)}
+          {/* A month key ("2022-09") reads "سبتمبر 2022", in this RTL box; any other label keeps its own LTR run. */}
+          <span dir={periodLabel === String(label) ? "ltr" : "rtl"} className="tabular-figures">
+            {periodLabel}
           </span>
         </p>
       )}
@@ -125,6 +130,22 @@ function RtlTooltip({ active, payload, label, unit }: RtlTooltipProps) {
       </ul>
     </div>
   );
+}
+
+/**
+ * Value-axis tick formatter. From 1,000 up the numbers use Arabic units ("8 آلاف", "1.5 مليون",
+ * "60 مليار"; `formatCompactAr`) instead of the Latin "8K"/"1.5M"/"60B" a general Arab reader may
+ * not parse; below that, `axisNumberFormatter` picks just enough decimals that neighbouring ticks
+ * never read the same.
+ */
+function valueAxisFormat(extent: ValueExtent): (n: number) => string {
+  const maxAbs = Math.max(Math.abs(extent.min), extent.max);
+  return maxAbs >= 1000 ? formatCompactAr : axisNumberFormatter(maxAbs);
+}
+
+/** The axis is as wide as its longest label; the invisible direction marks in an Arabic label take no room. */
+function axisWidth(format: (n: number) => string, extent: ValueExtent): number {
+  return valueAxisWidth((n) => stripBidiMarks(format(n)), extent.min, extent.max);
 }
 
 const axisTick = { fontSize: 12, fill: "var(--ink)" };
@@ -180,7 +201,7 @@ function AreaView({ vizConfig, rows, specs, visible, title }: ChartProps) {
   const data = partial ? splitPartial(rows, ["value"]) : rows;
   const values = columnOf(data, "value");
   const extent = valueExtent(rows, ["value"], false);
-  const format = axisNumberFormatter(Math.max(Math.abs(extent.min), extent.max));
+  const format = valueAxisFormat(extent);
   const dots = dotRenderer(values, rows.length <= DOT_THRESHOLD ? "all" : "isolated", spec.color);
 
   return (
@@ -193,12 +214,20 @@ function AreaView({ vizConfig, rows, specs, visible, title }: ChartProps) {
           </linearGradient>
         </defs>
         <CartesianGrid {...gridProps} vertical={false} />
-        <XAxis dataKey="period" tick={axisTick} tickLine={false} axisLine={axisLine} minTickGap={16} interval="preserveStartEnd" />
+        <XAxis
+          dataKey="period"
+          tick={axisTick}
+          tickLine={false}
+          axisLine={axisLine}
+          minTickGap={20}
+          interval="preserveStartEnd"
+          tickFormatter={formatPeriodTickAr}
+        />
         <YAxis
           tick={axisTick}
           tickLine={false}
           axisLine={false}
-          width={valueAxisWidth(format, extent.min, extent.max)}
+          width={axisWidth(format, extent)}
           tickFormatter={format}
         />
         <Tooltip content={<RtlTooltip unit={unit} />} />
@@ -242,19 +271,27 @@ function MultiLineView({ vizConfig, rows, visible, title }: ChartProps) {
   const partial = partialPeriodOf(vizConfig, rows) !== null;
   const data = partial ? splitPartial(rows, keys) : rows;
   const extent = valueExtent(rows, keys, false);
-  const format = axisNumberFormatter(Math.max(Math.abs(extent.min), extent.max));
+  const format = valueAxisFormat(extent);
   const mode = rows.length <= DOT_THRESHOLD ? "all" : "isolated";
 
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart accessibilityLayer title={title} data={data} margin={{ top: 24, right: 16, left: 0, bottom: 0 }}>
         <CartesianGrid {...gridProps} vertical={false} />
-        <XAxis dataKey="period" tick={axisTick} tickLine={false} axisLine={axisLine} minTickGap={16} interval="preserveStartEnd" />
+        <XAxis
+          dataKey="period"
+          tick={axisTick}
+          tickLine={false}
+          axisLine={axisLine}
+          minTickGap={20}
+          interval="preserveStartEnd"
+          tickFormatter={formatPeriodTickAr}
+        />
         <YAxis
           tick={axisTick}
           tickLine={false}
           axisLine={false}
-          width={valueAxisWidth(format, extent.min, extent.max)}
+          width={axisWidth(format, extent)}
           tickFormatter={format}
         />
         <Tooltip content={<RtlTooltip unit={unit} />} />
@@ -304,7 +341,7 @@ function BarHView({ vizConfig, rows, specs, title }: ChartProps) {
   const spec = specs[0];
   const unit = "unit" in vizConfig ? vizConfig.unit : undefined;
   const extent = valueExtent(rows, ["value"], false);
-  const format = axisNumberFormatter(Math.max(Math.abs(extent.min), extent.max));
+  const format = valueAxisFormat(extent);
   const labels = rows.map((r) => String(r.category ?? ""));
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -336,7 +373,7 @@ function BarStackedView({ vizConfig, rows, visible, title }: ChartProps) {
   const unit = "unit" in vizConfig ? vizConfig.unit : undefined;
   const stacked = vizConfig.type !== "bar-stacked" || vizConfig.stacked !== false;
   const extent = valueExtent(rows, visible.map((s) => s.key), stacked);
-  const format = axisNumberFormatter(Math.max(Math.abs(extent.min), extent.max));
+  const format = valueAxisFormat(extent);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart accessibilityLayer title={title} data={rows} margin={{ top: 24, right: 16, left: 0, bottom: 24 }}>
@@ -356,7 +393,7 @@ function BarStackedView({ vizConfig, rows, visible, title }: ChartProps) {
           tick={axisTick}
           tickLine={false}
           axisLine={false}
-          width={valueAxisWidth(format, extent.min, extent.max)}
+          width={axisWidth(format, extent)}
           tickFormatter={format}
         />
         <Tooltip content={<RtlTooltip unit={unit} />} />
@@ -378,7 +415,7 @@ function BarStackedView({ vizConfig, rows, visible, title }: ChartProps) {
 function HistogramView({ rows, specs, title }: ChartProps) {
   const spec = specs[0];
   const extent = valueExtent(rows, ["count"], false);
-  const format = axisNumberFormatter(Math.max(Math.abs(extent.min), extent.max));
+  const format = valueAxisFormat(extent);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart accessibilityLayer title={title} data={rows} margin={{ top: 10, right: 16, left: 0, bottom: 24 }} barCategoryGap={2}>
@@ -397,7 +434,7 @@ function HistogramView({ rows, specs, title }: ChartProps) {
           tick={axisTick}
           tickLine={false}
           axisLine={false}
-          width={valueAxisWidth(format, extent.min, extent.max)}
+          width={axisWidth(format, extent)}
           tickFormatter={format}
         />
         <Tooltip content={<RtlTooltip />} />

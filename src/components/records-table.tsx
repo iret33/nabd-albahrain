@@ -6,6 +6,8 @@ import type { RecordsPage } from "@/lib/queries";
 import { buildColumns, formatCell, type CellModel, type ColumnMeta } from "@/lib/cell-format";
 import { recordsHref, recordsRange } from "@/lib/dataset-page";
 import { MAX_RECORDS_QUERY_LENGTH } from "@/lib/records-query";
+import { NOUNS } from "@/lib/arabic-count";
+import { CountNoun } from "@/components/count-noun";
 import { NumberLatin } from "@/components/number-latin";
 import { Pagination } from "@/components/pagination";
 
@@ -50,8 +52,13 @@ function Cell({ model }: { model: CellModel }): ReactNode {
         </span>
       );
     default:
+      // `inline-block`, not `block`: a block span fills the cell, and its `dir="auto"` (LTR for Latin text or
+      // digits) then resolves text-align against ITS direction, so the text lands on the opposite side from the
+      // column header. As an atomic inline the cell's own `text-start`/`text-end` places it, shrink-wrapped, so
+      // header and cell share one edge. It still truncates at 18rem (`overflow: hidden` needs a box, so a plain
+      // inline span would lose the cap); `align-top` keeps the overflow-hidden box off the baseline.
       return (
-        <span dir="auto" title={model.title} className="block max-w-[18rem] truncate">
+        <span dir="auto" title={model.title} className="inline-block max-w-[18rem] truncate align-top">
           {model.text}
         </span>
       );
@@ -59,7 +66,7 @@ function Cell({ model }: { model: CellModel }): ReactNode {
 }
 
 function cellClass(column: ColumnMeta): string {
-  const base = "px-4 py-2.5 align-top text-ink";
+  const base = "px-4 py-2.5 align-top text-ink print:px-2 print:py-1 print:break-inside-avoid";
   if (column.numeric) return `${base} tabular-figures whitespace-nowrap text-end`;
   if (column.plainDigits) return `${base} tabular-figures whitespace-nowrap text-start`;
   return `${base} text-start`;
@@ -87,6 +94,11 @@ const buttonClass =
  *    absolutely positioned, and without a positioned ancestor they escape the
  *    overflow clip and widen the whole page.
  *  - The search form renders even when nothing matches, so it can be cleared.
+ *  - Past 10 pages the pager gets a "go to page" form (a GET form that keeps the
+ *    search and sort), so page 1,500 of a 50,000-row table is one entry. A table
+ *    wider than its box shows edge shadows where columns are hidden
+ *    (`scroll-cue`, CSS only, where scroll-driven animations exist) and, on
+ *    phones, a one-line hint.
  */
 export function RecordsTable({
   datasetId,
@@ -108,6 +120,11 @@ export function RecordsTable({
   const range = recordsRange(recordsPage.page, recordsPage.pageSize, recordsPage.total, recordsPage.rows.length);
   const clearHref = recordsHref(datasetId, { sort: sortField, dir: sortDir });
   const searchId = `records-search-${datasetId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  // The page-jump form carries the rest of the view as hidden fields, only when set (an empty `rq=` would
+  // pollute the URL) and never `page`: the form's own number input is named `page`.
+  const jumpFields: Array<readonly [string, string]> = [];
+  if (rq) jumpFields.push(["rq", rq]);
+  if (sortField) jumpFields.push(["sort", sortField], ["dir", sortDir]);
 
   return (
     <div id="records" className="scroll-mt-24">
@@ -116,7 +133,7 @@ export function RecordsTable({
         method="GET"
         role="search"
         aria-label="البحث في سجلات المجموعة"
-        className="flex flex-wrap items-center gap-2"
+        className="flex flex-wrap items-center gap-2 print:hidden"
       >
         <label htmlFor={searchId} className="sr-only">
           ابحث في السجلات
@@ -130,7 +147,7 @@ export function RecordsTable({
           placeholder="ابحث في السجلات"
           autoComplete="off"
           enterKeyHint="search"
-          className="min-h-11 min-w-0 flex-1 basis-56 rounded-full border border-ink/55 bg-white px-4 text-sm text-ink placeholder:text-ink/70 sm:max-w-sm"
+          className="min-h-11 min-w-0 flex-1 basis-56 rounded-full border border-ink/55 bg-white px-4 text-base text-ink placeholder:text-ink/70 sm:max-w-sm sm:text-sm pointer-coarse:text-base"
         />
         {sortField && (
           <>
@@ -178,7 +195,7 @@ export function RecordsTable({
           <p className="mt-4 text-xs leading-6 text-ink/70">
             {rq ? (
               <>
-                <NumberLatin value={recordsPage.total} /> سجل يطابق «<bdi>{rq}</bdi>» — يُعرض من{" "}
+                نتائج البحث عن «<bdi>{rq}</bdi>»: <CountNoun n={recordsPage.total} forms={NOUNS.record} /> — يُعرض من{" "}
               </>
             ) : (
               <>يُعرض من </>
@@ -187,70 +204,76 @@ export function RecordsTable({
             {!rq && (
               <>
                 {" "}
-                من أصل <NumberLatin value={recordsPage.total} /> سجل
+                من أصل <CountNoun n={recordsPage.total} forms={NOUNS.record} oblique />
               </>
             )}
             {recordsPage.sortFailed && " — تعذّر الفرز فعُرضت السجلات بترتيبها الأصلي"}
+            {/* Phones: the table is wider than the screen and nothing else says so (the edge shadows only show once it moves). */}
+            <span aria-hidden="true" className="block sm:hidden print:hidden">
+              ↔ مرّر الجدول أفقيًا لعرض باقي الأعمدة
+            </span>
           </p>
 
-          <div
-            role="region"
-            aria-label="جدول السجلات (يمكن تمريره أفقيًا)"
-            tabIndex={0}
-            className="relative mt-2 max-h-[65vh] overflow-auto rounded-2xl border border-line-light bg-white shadow-sm"
-          >
-            <table className="w-full min-w-[640px] border-collapse text-sm">
-              <caption className="sr-only">
-                {title} — السجلات من {range.from} إلى {range.to} من أصل {recordsPage.total}
-              </caption>
-              <thead>
-                <tr>
-                  {columns.map((column) => {
-                    const isSorted = sortField === column.name;
-                    const ariaSort = !column.sortable ? undefined : isSorted ? (sortDir === "asc" ? "ascending" : "descending") : "none";
-                    const nextDir = isSorted && sortDir === "asc" ? "desc" : "asc";
-                    const align = column.numeric ? "text-end" : "text-start";
-                    return (
-                      <th
-                        key={column.name}
-                        scope="col"
-                        aria-sort={ariaSort}
-                        className={`sticky top-0 z-10 whitespace-nowrap bg-sand-50 px-4 py-2 text-xs font-medium text-ink/80 shadow-[inset_0_-1px_0_var(--line-light)] ${align}`}
-                      >
-                        {column.sortable ? (
-                          <Link
-                            href={recordsHref(datasetId, { rq, sort: column.name, dir: nextDir })}
-                            rel="nofollow"
-                            title={`ترتيب حسب ${column.label}`}
-                            className="inline-flex min-h-9 items-center gap-1 rounded transition-colors hover:text-coral"
-                          >
-                            <bdi>{column.label}</bdi>
-                            <span aria-hidden="true" className={isSorted ? "text-coral" : "text-ink/50"}>
-                              {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
+          <div className="scroll-cue relative mt-2">
+            <div
+              role="region"
+              aria-label="جدول السجلات (يمكن تمريره أفقيًا)"
+              tabIndex={0}
+              className="scroll-cue-track relative max-h-[65vh] overflow-auto rounded-2xl border border-line-light bg-white shadow-sm print:max-h-none print:overflow-visible"
+            >
+              <table className="w-full min-w-[640px] border-collapse text-sm print:min-w-0 print:text-[11px]">
+                <caption className="sr-only">
+                  {title} — السجلات من {range.from} إلى {range.to} من أصل {recordsPage.total}
+                </caption>
+                <thead>
+                  <tr>
+                    {columns.map((column) => {
+                      const isSorted = sortField === column.name;
+                      const ariaSort = !column.sortable ? undefined : isSorted ? (sortDir === "asc" ? "ascending" : "descending") : "none";
+                      const nextDir = isSorted && sortDir === "asc" ? "desc" : "asc";
+                      const align = column.numeric ? "text-end" : "text-start";
+                      return (
+                        <th
+                          key={column.name}
+                          scope="col"
+                          aria-sort={ariaSort}
+                          className={`sticky top-0 z-10 whitespace-nowrap bg-sand-50 px-4 py-2 print:static print:px-2 text-xs font-medium text-ink/80 shadow-[inset_0_-1px_0_var(--line-light)] ${align}`}
+                        >
+                          {column.sortable ? (
+                            <Link
+                              href={recordsHref(datasetId, { rq, sort: column.name, dir: nextDir })}
+                              rel="nofollow"
+                              title={`ترتيب حسب ${column.label}`}
+                              className="inline-flex min-h-9 items-center gap-1 rounded transition-colors hover:text-coral"
+                            >
+                              <bdi>{column.label}</bdi>
+                              <span aria-hidden="true" className={isSorted ? "text-coral" : "text-ink/50"}>
+                                {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
+                              </span>
+                            </Link>
+                          ) : (
+                            <span className="inline-flex min-h-9 items-center">
+                              <bdi>{column.label}</bdi>
                             </span>
-                          </Link>
-                        ) : (
-                          <span className="inline-flex min-h-9 items-center">
-                            <bdi>{column.label}</bdi>
-                          </span>
-                        )}
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {recordsPage.rows.map((row) => (
-                  <tr key={row.id} className="border-b border-line-light/70 last:border-0 hover:bg-sand-50/60">
-                    {columns.map((column) => (
-                      <td key={column.name} className={cellClass(column)}>
-                        <Cell model={formatCell(row.data[column.name], column)} />
-                      </td>
-                    ))}
+                          )}
+                        </th>
+                      );
+                    })}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {recordsPage.rows.map((row) => (
+                    <tr key={row.id} className="border-b border-line-light/70 last:border-0 hover:bg-sand-50/60">
+                      {columns.map((column) => (
+                        <td key={column.name} className={cellClass(column)}>
+                          <Cell model={formatCell(row.data[column.name], column)} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </>
       )}
@@ -259,6 +282,7 @@ export function RecordsTable({
         page={recordsPage.page}
         totalPages={recordsPage.totalPages}
         hrefForPage={(p) => recordsHref(datasetId, { ...view, page: p })}
+        jump={{ action: `/dataset/${encodeURIComponent(datasetId)}#records`, hidden: jumpFields }}
         nofollow
       />
     </div>

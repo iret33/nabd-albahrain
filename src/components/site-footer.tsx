@@ -48,7 +48,8 @@ export function SiteFooter() {
   return (
     <footer className="border-t border-line-light bg-sand-100">
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-        <nav aria-label="روابط إضافية">
+        {/* Printed pages keep the attribution line below and drop the link list and the freshness line. */}
+        <nav aria-label="روابط إضافية" className="print:hidden">
           <ul role="list" className="flex flex-wrap justify-center gap-x-5 text-sm font-medium text-ink/80 sm:justify-start">
             <li>
               <Link href="/categories" className={linkClass}>
@@ -88,7 +89,7 @@ export function SiteFooter() {
           </ul>
         </nav>
 
-        <div className="mt-2 flex min-h-5 justify-center sm:justify-start">
+        <div className="mt-2 flex min-h-5 justify-center sm:justify-start print:hidden">
           <FooterFreshness />
         </div>
 

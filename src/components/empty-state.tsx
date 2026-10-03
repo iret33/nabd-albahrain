@@ -19,7 +19,10 @@ export function EmptyState({
   return (
     <div className="rounded-2xl border border-dashed border-ink/30 bg-white px-6 py-14 text-center">
       <p className="font-display text-lg font-bold text-sea-900">{title}</p>
-      {description && <p className="mx-auto mt-2 max-w-md text-sm leading-7 text-ink-muted">{description}</p>}
+      {description && (
+        // `anywhere`: the description may quote what the visitor typed, and a pasted URL has no break point.
+        <p className="mx-auto mt-2 max-w-md text-sm leading-7 text-ink-muted [overflow-wrap:anywhere]">{description}</p>
+      )}
       {children && <div className="mt-5 flex flex-wrap items-center justify-center gap-3">{children}</div>}
     </div>
   );

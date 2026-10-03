@@ -30,7 +30,10 @@ function Chevron({ dir }: { dir: "right" | "left" }) {
  * - With more than JUMP_FORM_MIN_PAGES pages, `jump` adds a small GET form
  *   ("go to page") that submits the listing's other params as hidden fields, so
  *   page 1,500 of a 50,000-row table is one entry, not 1,500 clicks. An
- *   out-of-range number is clamped to the last page by the data layer.
+ *   out-of-range number is clamped to the last page by the data layer. It is
+ *   the only way to reach a distant page on a phone, where the number window is
+ *   hidden, so it wraps instead of overflowing at 320px, and its input is 16px
+ *   (a smaller font makes iOS zoom the page on focus).
  */
 export function Pagination({
   page,
@@ -52,7 +55,7 @@ export function Pagination({
   const slots = pageWindow(page, totalPages);
 
   return (
-    <nav aria-label="ترقيم الصفحات" className="mt-8 flex flex-col items-center gap-4">
+    <nav aria-label="ترقيم الصفحات" className="mt-8 flex flex-col items-center gap-4 print:hidden">
       <ul role="list" className="flex flex-wrap items-center justify-center gap-1.5">
         <li>
           {page > 1 ? (
@@ -118,7 +121,7 @@ export function Pagination({
       </p>
 
       {jump && totalPages > JUMP_FORM_MIN_PAGES && (
-        <form action={jump.action} method="GET" className="flex items-center gap-2 text-sm">
+        <form action={jump.action} method="GET" className="flex flex-wrap items-center justify-center gap-2 text-sm">
           {jump.hidden &&
             Array.from(jump.hidden).map(([name, value]) => <input key={`${name}=${value}`} type="hidden" name={name} value={value} />)}
           <label htmlFor={jumpId} className="text-ink-muted">
@@ -133,7 +136,7 @@ export function Pagination({
             max={totalPages}
             defaultValue={page}
             dir="ltr"
-            className="tabular-figures h-11 w-24 rounded-lg border border-ink/55 bg-white px-3 text-center text-ink"
+            className="tabular-figures h-11 w-24 rounded-lg border border-ink/55 bg-white px-3 text-center text-base text-ink"
           />
           <button
             type="submit"

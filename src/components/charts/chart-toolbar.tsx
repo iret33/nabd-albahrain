@@ -114,7 +114,7 @@ export function ChartToolbar({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 print:hidden">
       <button type="button" onClick={downloadCsv} className={buttonClass} title="بيانات الرسم كاملة (كل السلاسل) كملف CSV يفتح في إكسل">
         <DownloadIcon />
         تنزيل CSV
