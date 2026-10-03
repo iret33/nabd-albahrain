@@ -38,7 +38,10 @@ yarn-error.log*
 # local compose override (copy of docker-compose.override.example.yml)
 docker-compose.override.yml
 
-# build outputs & test artifacts
+# local Claude Code state (settings, worktrees, scratch) — never committed
+/.claude/
+
+# build outputs & test artifacts (/coverage is listed under "testing" above)
 /dist
 /playwright-report
 /test-results
@@ -50,4 +53,3 @@ docker-compose.override.yml
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-/dist
