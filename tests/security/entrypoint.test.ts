@@ -105,7 +105,11 @@ describe.skipIf(SKIP)("entrypoint.sh: exec'd through its shebang, as the image d
     const crlf = path.join(work, "entrypoint-crlf.sh");
     writeFileSync(crlf, readFileSync(ENTRYPOINT, "utf8").replace(/\n/g, "\r\n"));
     chmodSync(crlf, 0o755);
-    const r = spawnSync(crlf, ["echo", "never"], { cwd: work, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" });
+    const r = spawnSync(crlf, ["echo", "never"], {
+      cwd: work,
+      env: { PATH: "/usr/bin:/bin", NODE_ENV: "production" },
+      encoding: "utf8",
+    });
     // The kernel looks for the interpreter "/bin/sh\r": ENOENT, nothing runs.
     expect((r.error as NodeJS.ErrnoException | undefined)?.code).toBe("ENOENT");
     expect(r.stdout ?? "").not.toContain("never");
