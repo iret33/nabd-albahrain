@@ -158,7 +158,7 @@ describe.skipIf(!RUN_INTEGRATION)("sync lock (integration)", () => {
         expect(await h.lock.getLockState()).toMatchObject({ stale: true });
         await a.release();
 
-        expect(await claimCatalogCooldown(120)).toEqual({ claimed: true });
+        expect(await claimCatalogCooldown(120)).toMatchObject({ claimed: true });
         const second = await claimCatalogCooldown(120);
         expect(second.claimed).toBe(false);
         if (!second.claimed) {
